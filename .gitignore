@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc.*
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+.tox/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Runtime artifacts
+logs/
+backups/
+audio/
+f5_tts_cache/
+user_configs/
+tmp/
+temp/
+artifacts/
+coverage/
+.coverage
+.coverage.*
+*.sqlite
+*.db
+*.log
+
+# ML/model artifacts
+models--*/
+snapshots/
+*.safetensors
+*.bin
+pytorch_model.bin
+model.bin
+model_last_inference.pt
+*.pt
+*.ckpt
+*.onnx
+
+# Local caches
+.cache/
+.huggingface/
+
+# OS/IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Misc local files
+EXPORT_MANIFEST.txt
+pytest-cache-files-*/

@@ -1,0 +1,38 @@
+name: F5_tts CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  lint-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+          pip install -r requirements.txt
+        working-directory: .
+
+      - name: Ruff check
+        run: ruff check .
+        working-directory: .
+
+      - name: Validate imports
+        run: python -m py_compile main.py app_factory.py health_api.py auth.py
+        working-directory: .
+
+      - name: Build Docker image
+        run: docker build -f Dockerfile.prod -t f5-tts-ci:latest .
+        working-directory: .
+

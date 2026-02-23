@@ -1,0 +1,132 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: f5_tts_postgres
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:?POSTGRES_USER is required}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - POSTGRES_DB=${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: f5_tts_redis
+    command: redis-server --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a ${REDIS_PASSWORD:?REDIS_PASSWORD is required} ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  tts_service:
+    build:
+      context: ..
+      dockerfile: Dockerfile.prod
+    container_name: f5_tts_service
+    ports:
+      - "${TTS_PORT:-8001}:8001"
+    env_file:
+      - ../.env
+    environment:
+      - ENVIRONMENT=production
+      - DATABASE_URL=postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - GPU_REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - ALGORITHM=${ALGORITHM:-HS256}
+      - INTERNAL_SERVICE_JWT_SECRET=${INTERNAL_SERVICE_JWT_SECRET}
+      - INTERNAL_SERVICE_JWT_ISSUER=${INTERNAL_SERVICE_JWT_ISSUER:-bot_service}
+      - INTERNAL_SERVICE_JWT_AUDIENCE=${INTERNAL_SERVICE_JWT_AUDIENCE:-f5_tts}
+      - INTERNAL_SERVICE_JWT_ALLOWED_SUBJECTS=${INTERNAL_SERVICE_JWT_ALLOWED_SUBJECTS:-bot_service}
+      - TTS_INTERNAL_API_KEY=${TTS_INTERNAL_API_KEY}
+      - TTS_WORKERS=${TTS_WORKERS:-1}
+    volumes:
+      - ../audio:/app/audio
+      - ../logs:/app/logs
+      - ../backups:/app/backups
+      - tts_cache:/app/f5_tts_cache
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  tts_worker_1:
+    build:
+      context: ..
+      dockerfile: Dockerfile.prod
+    container_name: f5_tts_worker_1
+    command: python worker.py
+    env_file:
+      - ../.env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - GPU_REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - WORKER_ID=worker_1
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - ALGORITHM=${ALGORITHM:-HS256}
+    volumes:
+      - ../audio:/app/audio
+      - ../logs:/app/logs
+      - tts_cache:/app/f5_tts_cache
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  tts_worker_2:
+    build:
+      context: ..
+      dockerfile: Dockerfile.prod
+    container_name: f5_tts_worker_2
+    command: python worker.py
+    env_file:
+      - ../.env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      - REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - GPU_REDIS_URL=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+      - WORKER_ID=worker_2
+      - SECRET_KEY=${SECRET_KEY:?SECRET_KEY is required}
+      - ALGORITHM=${ALGORITHM:-HS256}
+    volumes:
+      - ../audio:/app/audio
+      - ../logs:/app/logs
+      - tts_cache:/app/f5_tts_cache
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  tts_cache:
+
+networks:
+  default:
+    name: f5_tts_network_advanced
+    driver: bridge
+
