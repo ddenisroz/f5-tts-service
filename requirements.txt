@@ -15,7 +15,7 @@ librosa>=0.10.1
 pydub>=0.25.1
 numpy>=1.24.0,<2.0.0
 faster-whisper>=0.10.0
-ruaccent>=2.0.0
+ruaccent>=1.5.8.3
 
 # redis - removed, using database instead
 # aioredis - removed, using database instead
