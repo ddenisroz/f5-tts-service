@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyc.*
+.venv/
+.pytest_cache/
+data/audio/*
+!data/audio/.gitkeep
+data/voices/*
+!data/voices/.gitkeep
+models/

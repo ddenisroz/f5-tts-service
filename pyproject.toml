@@ -1,0 +1,20 @@
+[project]
+name = "f5-tts-service"
+version = "0.1.0"
+description = "Provider-level F5 TTS engine service with RU preprocessing and voice/admin compatibility APIs."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi==0.116.1",
+    "uvicorn[standard]==0.35.0",
+    "httpx==0.28.1",
+    "pydantic-settings==2.11.0",
+    "python-multipart==0.0.20",
+    "num2words==0.5.14",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest==8.4.1",
+]
+

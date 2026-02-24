@@ -1,0 +1,34 @@
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+
+WORD_RE = re.compile(r"\b[\w-]+\b", re.UNICODE)
+
+
+class Yoficator:
+    def __init__(self, dictionary_path: Path) -> None:
+        self.dictionary: dict[str, str] = {}
+        if dictionary_path.exists():
+            self.dictionary = json.loads(dictionary_path.read_text(encoding="utf-8"))
+
+    def apply(self, text: str) -> str:
+        if not self.dictionary:
+            return text
+
+        def _replace(match: re.Match[str]) -> str:
+            original = match.group(0)
+            lowered = original.lower()
+            replacement = self.dictionary.get(lowered)
+            if not replacement:
+                return original
+            if original.isupper():
+                return replacement.upper()
+            if original[0].isupper():
+                return replacement.capitalize()
+            return replacement
+
+        return WORD_RE.sub(_replace, text)
+
