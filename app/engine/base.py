@@ -22,8 +22,12 @@ class BaseTtsEngine:
         *,
         text: str,
         voice: str,
+        ref_audio_path: str,
+        ref_text: str,
         volume_level: float = 50.0,
+        cfg_strength: float | None = None,
+        speed_preset: str | None = None,
+        remove_silence: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> SynthesisResult:  # pragma: no cover - interface
         raise NotImplementedError
-

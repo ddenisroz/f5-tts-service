@@ -11,10 +11,16 @@ dependencies = [
     "pydantic-settings==2.11.0",
     "python-multipart==0.0.20",
     "num2words==0.5.14",
+    "numpy==2.2.6",
+    "soundfile==0.13.1",
+    "pydub==0.25.1",
+    "faster-whisper==1.2.1",
+    "sqlalchemy[asyncio]==2.0.41",
+    "asyncpg==0.30.0",
+    "alembic==1.17.1",
 ]
 
 [tool.uv]
 dev-dependencies = [
     "pytest==8.4.1",
 ]
-
