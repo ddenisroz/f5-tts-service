@@ -8,3 +8,6 @@ data/audio/*
 data/voices/*
 !data/voices/.gitkeep
 models/
+.env
+data/limits/*
+!data/limits/.gitkeep
