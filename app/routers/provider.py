@@ -14,7 +14,7 @@ router = APIRouter(prefix="/v1", tags=["provider"], dependencies=[Depends(verify
 @router.post("/synthesize", response_model=ProviderSynthesizeResponse)
 async def synthesize(request: Request, payload: ProviderSynthesizeRequest) -> ProviderSynthesizeResponse:
     started = perf_counter()
-    request_id = uuid.uuid4().hex
+    request_id = str(payload.request_id or uuid.uuid4().hex)
     requested_format = str(payload.format or "wav").strip().lower()
     if requested_format != "wav":
         return ProviderSynthesizeResponse(

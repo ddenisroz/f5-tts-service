@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+DEFAULT_VOICE_NAME = "default_voice"
+
 
 async def resolve_synthesis_context(app, payload: dict[str, Any]) -> dict[str, Any]:
     settings = app.state.settings
@@ -18,7 +20,11 @@ async def resolve_synthesis_context(app, payload: dict[str, Any]) -> dict[str, A
     requested_voice = str(payload.get("voice") or "").strip()
 
     voice_record = await voice_store.resolve_voice_record_for_user(user_id, requested_voice)
-    selected_voice = str((voice_record or {}).get("name") or "female_1")
+    if voice_record is None:
+        raise ValueError(
+            "No valid F5 voice is available. Upload a user voice with reference audio before enabling F5 synthesis."
+        )
+    selected_voice = str((voice_record or {}).get("name") or DEFAULT_VOICE_NAME)
 
     cfg_strength = payload.get("cfg_strength")
     if cfg_strength is None and voice_record is not None:
@@ -59,7 +65,10 @@ async def resolve_synthesis_context(app, payload: dict[str, Any]) -> dict[str, A
         if not ref_audio_path:
             raise ValueError(f"Invalid reference path for voice '{selected_voice}'")
     if not ref_audio_path:
-        ref_audio_path = str(settings.default_ref_audio_path)
+        raise ValueError(
+            f"Reference audio is missing for voice '{selected_voice}'. "
+            "Upload a valid reference file before using this voice."
+        )
 
     ref_audio = Path(ref_audio_path).resolve()
     if not ref_audio.exists():

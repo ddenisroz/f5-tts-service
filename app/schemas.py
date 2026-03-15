@@ -14,13 +14,15 @@ class HealthResponse(BaseModel):
 
 class ProviderSynthesizeRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=10000)
-    voice: str = Field(default="female_1", max_length=120)
+    voice: str = Field(default="default_voice", max_length=120)
     tenant_id: str | None = Field(default=None, max_length=200)
     channel_name: str | None = Field(default=None, max_length=120)
     author: str | None = Field(default=None, max_length=120)
     user_id: int | None = None
     volume_level: float = Field(default=50.0, ge=0.0, le=100.0)
     format: str = Field(default="wav")
+    request_id: str | None = Field(default=None, max_length=200)
+    event_id: str | None = Field(default=None, max_length=200)
     cfg_strength: float | None = None
     speed_preset: str | None = None
     remove_silence: bool = False
@@ -50,6 +52,8 @@ class CompatSynthesizeChannelRequest(BaseModel):
     blocked_users: list[str] = Field(default_factory=list)
     provider: str | None = None
     voice: str | None = None
+    request_id: str | None = Field(default=None, max_length=200)
+    event_id: str | None = Field(default=None, max_length=200)
 
 
 class UserTtsLimitsPatch(BaseModel):

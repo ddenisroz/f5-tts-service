@@ -44,8 +44,8 @@ async def synthesize_channel(request: Request, payload: CompatSynthesizeChannelR
         return {
             "success": False,
             "audio_url": None,
-            "voice": payload.voice or "female_1",
-            "selected_voice": payload.voice or "female_1",
+            "voice": payload.voice or "default_voice",
+            "selected_voice": payload.voice or "default_voice",
             "tts_type": "ai_f5",
             "duration": None,
             "error": f"Text too long. Maximum {max_len} characters",
@@ -54,15 +54,26 @@ async def synthesize_channel(request: Request, payload: CompatSynthesizeChannelR
         return {
             "success": False,
             "audio_url": None,
-            "voice": payload.voice or "female_1",
-            "selected_voice": payload.voice or "female_1",
+            "voice": payload.voice or "default_voice",
+            "selected_voice": payload.voice or "default_voice",
             "tts_type": "ai_f5",
             "duration": None,
             "error": "Text is empty after filtering",
         }
 
     preferred_voice = payload.voice or payload.tts_settings.get("voice")
-    selected_voice = await request.app.state.voice_store.resolve_voice_for_user(payload.user_id, preferred_voice)
+    voice_record = await request.app.state.voice_store.resolve_voice_record_for_user(payload.user_id, preferred_voice)
+    if voice_record is None:
+        return {
+            "success": False,
+            "audio_url": None,
+            "voice": preferred_voice or "default_voice",
+            "selected_voice": preferred_voice or "default_voice",
+            "tts_type": "ai_f5",
+            "duration": None,
+            "error": "No valid F5 voice is available. Upload a voice with reference audio before enabling F5 synthesis.",
+        }
+    selected_voice = str(voice_record.get("name") or preferred_voice or "default_voice")
     tts_settings = payload.tts_settings if isinstance(payload.tts_settings, dict) else {}
     voice_settings = tts_settings.get("voice_settings", {}) if isinstance(tts_settings.get("voice_settings"), dict) else {}
     cfg_strength = voice_settings.get("cfg_strength", tts_settings.get("cfg_strength"))
@@ -95,13 +106,15 @@ async def synthesize_channel(request: Request, payload: CompatSynthesizeChannelR
         "cfg_strength": cfg_strength,
         "speed_preset": speed_preset,
         "remove_silence": remove_silence,
-        "metadata": {
-            "compat": True,
-            "cfg_strength": cfg_strength,
-            "speed_preset": speed_preset,
-            "remove_silence": remove_silence,
-        },
-    }
+            "metadata": {
+                "compat": True,
+                "cfg_strength": cfg_strength,
+                "speed_preset": speed_preset,
+                "remove_silence": remove_silence,
+                "request_id": payload.request_id or tts_settings.get("request_id"),
+                "event_id": payload.event_id or tts_settings.get("event_id"),
+            },
+        }
     result = await request.app.state.provider_synthesize(provider_request)
     success = bool(result.get("success"))
     duration = result.get("duration")

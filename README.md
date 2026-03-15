@@ -39,6 +39,7 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8011
 - Audio files are served under `/api/tts/audio/{filename}`.
 - Auth is strict API key only (`F5_TTS_SERVICE_API_KEYS`), no JWT/no-anon mode.
 - Text input is guarded by `F5_TTS_MAX_INPUT_TEXT_LENGTH`.
+- The service no longer creates an empty `female_1` placeholder. `female_1` and `default_voice` are treated as legacy aliases for default selection, and synthesis now requires a real uploaded/reference-backed voice.
 - Voice catalog storage:
   - default fallback: file store (`data/voices/state.json`)
   - PostgreSQL mode: set `F5_TTS_DATABASE_URL=postgresql://user:pass@host:5432/dbname`

@@ -11,3 +11,7 @@ models/
 .env
 data/limits/*
 !data/limits/.gitkeep
+.ruff_cache/
+pytest-cache-files-*/
+tmp_runtime_logs/
+*.tmp

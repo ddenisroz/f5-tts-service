@@ -26,6 +26,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .schemas import VoiceStats
 
+DEFAULT_VOICE_NAME = "default_voice"
+DEFAULT_VOICE_ALIASES = {DEFAULT_VOICE_NAME, "female_1", "default"}
+
 
 class Base(DeclarativeBase):
     pass
@@ -101,7 +104,6 @@ class PostgresVoiceStore:
     async def startup(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-        await self._ensure_default_voice()
 
     async def close(self) -> None:
         await self.engine.dispose()
@@ -114,7 +116,7 @@ class PostgresVoiceStore:
                 .order_by(VoiceRow.id.asc())
             )
             rows = (await session.scalars(stmt)).all()
-            return [self._row_to_dict(row) for row in rows]
+            return [payload for row in rows if (payload := self._row_to_dict(row)) and self._is_visible_voice(payload)]
 
     async def list_available_voices(self, user_id: int | None) -> list[dict[str, Any]]:
         return await self._active_voices_for_user(user_id)
@@ -133,7 +135,7 @@ class PostgresVoiceStore:
                 .order_by(VoiceRow.id.asc())
             )
             rows = (await session.scalars(stmt)).all()
-            return [self._row_to_dict(row) for row in rows]
+            return [payload for row in rows if (payload := self._row_to_dict(row)) and self._is_visible_voice(payload)]
 
     async def list_all_voices(self) -> list[dict[str, Any]]:
         async with self.session_factory() as session:
@@ -340,7 +342,7 @@ class PostgresVoiceStore:
     async def resolve_voice_for_user(self, user_id: int | None, requested_voice: str | None) -> str:
         selected = await self.resolve_voice_record_for_user(user_id, requested_voice)
         if not selected:
-            return "female_1"
+            return DEFAULT_VOICE_NAME
         return str(selected["name"])
 
     async def resolve_voice_record_for_user(
@@ -353,12 +355,23 @@ class PostgresVoiceStore:
             return None
         enabled_pool = await self._filter_by_enabled(user_id, active)
         effective_pool = enabled_pool if enabled_pool else active
+        usable_pool = [voice for voice in effective_pool if self._is_usable_voice(voice)]
+        if not usable_pool:
+            return None
+
         requested = (requested_voice or "").strip()
-        if requested and requested.lower() != "random":
-            matched = self._find_by_name(effective_pool, requested)
+        normalized_requested = requested.lower()
+        if normalized_requested == "random":
+            return random.choice(usable_pool)
+        if requested and normalized_requested not in DEFAULT_VOICE_ALIASES:
+            matched = self._find_by_name(usable_pool, requested)
             if matched:
                 return matched
-        return random.choice(effective_pool)
+
+        default_voice = self._find_by_name(usable_pool, DEFAULT_VOICE_NAME)
+        if default_voice:
+            return default_voice
+        return usable_pool[0]
 
     async def stats(self) -> VoiceStats:
         async with self.session_factory() as session:
@@ -395,31 +408,6 @@ class PostgresVoiceStore:
             updated_at=datetime.now(timezone.utc),
         )
 
-    async def _ensure_default_voice(self) -> None:
-        async with self.session_factory() as session:
-            async with session.begin():
-                stmt = select(VoiceRow.id).where(
-                    and_(
-                        VoiceRow.voice_type == "global",
-                        func.lower(VoiceRow.name) == "female_1",
-                    )
-                )
-                exists = await session.scalar(stmt)
-                if exists is None:
-                    session.add(
-                        VoiceRow(
-                            name="female_1",
-                            file_path="",
-                            voice_type="global",
-                            owner_id=None,
-                            is_public=True,
-                            is_active=True,
-                            reference_text=None,
-                            cfg_strength=None,
-                            speed_preset=None,
-                        )
-                    )
-
     async def _active_voices_for_user(self, user_id: int | None) -> list[dict[str, Any]]:
         async with self.session_factory() as session:
             if user_id is None:
@@ -443,7 +431,7 @@ class PostgresVoiceStore:
                     .order_by(VoiceRow.id.asc())
                 )
             rows = (await session.scalars(stmt)).all()
-            return [self._row_to_dict(row) for row in rows]
+            return [payload for row in rows if (payload := self._row_to_dict(row)) and self._is_visible_voice(payload)]
 
     async def _filter_by_enabled(self, user_id: int | None, voices: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if user_id is None:
@@ -460,6 +448,36 @@ class PostgresVoiceStore:
             if str(voice.get("name", "")).strip().lower() == lowered:
                 return voice
         return None
+
+    @classmethod
+    def _is_default_alias_name(cls, name: object) -> bool:
+        return str(name or "").strip().lower() in DEFAULT_VOICE_ALIASES
+
+    @classmethod
+    def _has_reference_file(cls, voice: dict[str, Any]) -> bool:
+        file_path = str(voice.get("file_path") or "").strip()
+        if not file_path:
+            return False
+        try:
+            return Path(file_path).expanduser().resolve().exists()
+        except Exception:
+            return False
+
+    @classmethod
+    def _is_legacy_placeholder(cls, voice: dict[str, Any]) -> bool:
+        return (
+            str(voice.get("voice_type") or "").strip().lower() == "global"
+            and cls._is_default_alias_name(voice.get("name"))
+            and not cls._has_reference_file(voice)
+        )
+
+    @classmethod
+    def _is_visible_voice(cls, voice: dict[str, Any]) -> bool:
+        return bool(voice.get("is_active", True)) and not cls._is_legacy_placeholder(voice)
+
+    @classmethod
+    def _is_usable_voice(cls, voice: dict[str, Any]) -> bool:
+        return cls._is_visible_voice(voice) and cls._has_reference_file(voice)
 
     @staticmethod
     def _row_to_dict(row: VoiceRow) -> dict[str, Any]:

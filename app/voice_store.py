@@ -12,6 +12,9 @@ from typing import Any
 from .schemas import VoiceRecord, VoiceStats
 from .voice_store_postgres import PostgresVoiceStore
 
+DEFAULT_VOICE_NAME = "default_voice"
+DEFAULT_VOICE_ALIASES = {DEFAULT_VOICE_NAME, "female_1", "default"}
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -27,23 +30,9 @@ class FileVoiceStore:
         if not self.state_path.exists():
             self._write_state(
                 {
-                    "next_id": 2,
+                    "next_id": 1,
                     "updated_at": _utc_now_iso(),
-                    "voices": [
-                        {
-                            "id": 1,
-                            "name": "female_1",
-                            "file_path": "",
-                            "voice_type": "global",
-                            "owner_id": None,
-                            "is_public": True,
-                            "is_active": True,
-                            "reference_text": None,
-                            "created_at": _utc_now_iso(),
-                            "cfg_strength": None,
-                            "speed_preset": None,
-                        }
-                    ],
+                    "voices": [],
                     "enabled": {},
                 }
             )
@@ -56,7 +45,11 @@ class FileVoiceStore:
 
     async def list_global_voices(self) -> list[dict[str, Any]]:
         state = self._read_state()
-        return [v for v in state["voices"] if v.get("voice_type") == "global" and v.get("is_active", True)]
+        return [
+            v
+            for v in state["voices"]
+            if v.get("voice_type") == "global" and self._is_visible_voice(v)
+        ]
 
     async def list_available_voices(self, user_id: int | None) -> list[dict[str, Any]]:
         return self._active_voices_for_user(user_id)
@@ -66,7 +59,7 @@ class FileVoiceStore:
         return [
             v
             for v in state["voices"]
-            if int(v.get("owner_id") or 0) == user_id and v.get("is_active", True)
+            if int(v.get("owner_id") or 0) == user_id and self._is_visible_voice(v)
         ]
 
     async def list_all_voices(self) -> list[dict[str, Any]]:
@@ -218,7 +211,7 @@ class FileVoiceStore:
     async def resolve_voice_for_user(self, user_id: int | None, requested_voice: str | None) -> str:
         selected = await self.resolve_voice_record_for_user(user_id, requested_voice)
         if not selected:
-            return "female_1"
+            return DEFAULT_VOICE_NAME
         return str(selected["name"])
 
     async def resolve_voice_record_for_user(
@@ -232,12 +225,23 @@ class FileVoiceStore:
 
         enabled_pool = self._filter_by_enabled(user_id, active)
         effective_pool = enabled_pool if enabled_pool else active
+        usable_pool = [voice for voice in effective_pool if self._is_usable_voice(voice)]
+        if not usable_pool:
+            return None
+
         requested = (requested_voice or "").strip()
-        if requested and requested.lower() != "random":
-            matched = self._find_by_name(effective_pool, requested)
+        normalized_requested = requested.lower()
+        if normalized_requested == "random":
+            return random.choice(usable_pool)
+        if requested and normalized_requested not in DEFAULT_VOICE_ALIASES:
+            matched = self._find_by_name(usable_pool, requested)
             if matched:
                 return matched
-        return random.choice(effective_pool)
+
+        default_voice = self._find_by_name(usable_pool, DEFAULT_VOICE_NAME)
+        if default_voice:
+            return default_voice
+        return usable_pool[0]
 
     async def stats(self) -> VoiceStats:
         state = self._read_state()
@@ -275,7 +279,7 @@ class FileVoiceStore:
 
     def _active_voices_for_user(self, user_id: int | None) -> list[dict[str, Any]]:
         voices = self._read_state()["voices"]
-        active = [voice for voice in voices if voice.get("is_active", True)]
+        active = [voice for voice in voices if self._is_visible_voice(voice)]
         if user_id is None:
             return [voice for voice in active if voice.get("voice_type") == "global"]
         user_specific = []
@@ -293,6 +297,36 @@ class FileVoiceStore:
         if not enabled_ids:
             return voices
         return [voice for voice in voices if int(voice["id"]) in enabled_ids]
+
+    @classmethod
+    def _is_default_alias_name(cls, name: object) -> bool:
+        return str(name or "").strip().lower() in DEFAULT_VOICE_ALIASES
+
+    @classmethod
+    def _has_reference_file(cls, voice: dict[str, Any]) -> bool:
+        file_path = str(voice.get("file_path") or "").strip()
+        if not file_path:
+            return False
+        try:
+            return Path(file_path).expanduser().resolve().exists()
+        except Exception:
+            return False
+
+    @classmethod
+    def _is_legacy_placeholder(cls, voice: dict[str, Any]) -> bool:
+        return (
+            str(voice.get("voice_type") or "").strip().lower() == "global"
+            and cls._is_default_alias_name(voice.get("name"))
+            and not cls._has_reference_file(voice)
+        )
+
+    @classmethod
+    def _is_visible_voice(cls, voice: dict[str, Any]) -> bool:
+        return bool(voice.get("is_active", True)) and not cls._is_legacy_placeholder(voice)
+
+    @classmethod
+    def _is_usable_voice(cls, voice: dict[str, Any]) -> bool:
+        return cls._is_visible_voice(voice) and cls._has_reference_file(voice)
 
     @staticmethod
     def _find_by_name(voices: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
