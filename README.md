@@ -26,6 +26,8 @@ uv sync
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8011
 ```
 
+`.env.example` intentionally contains only the core runtime wiring. Advanced synthesis, upload, limits, and transcriber overrides still exist in `app/config.py` and should be added to `.env` only when you actually need to change the defaults.
+
 ## Notes
 
 - `F5_TTS_ENGINE_MODE=real` is the default. Service starts only with real engine integration.
