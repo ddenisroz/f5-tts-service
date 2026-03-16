@@ -4,22 +4,81 @@ import asyncio
 import importlib
 import io
 import logging
+import re
 import sys
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from ..logging_utils import get_request_logger, merge_request_context
 from .base import BaseTtsEngine, SynthesisResult
 
 logger = logging.getLogger(__name__)
 
-SPEED_FACTORS: dict[str, float] = {
-    "very_slow": 0.72,
-    "slow": 0.86,
-    "normal": 1.0,
-    "fast": 1.18,
-    "very_fast": 1.34,
+CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
+LATIN_RE = re.compile(r"[A-Za-z]")
+LEGACY_SPEED_PRESETS: dict[str, dict[str, list[float]]] = {
+    "very_slow": {
+        "russian": [0.1, 0.3, 0.6, 0.8, 0.9, 1.0],
+        "english": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+    },
+    "slow": {
+        "russian": [0.3, 0.6, 0.8, 0.9, 0.9, 1.0],
+        "english": [0.2, 0.4, 0.5, 0.7, 0.7, 0.8],
+    },
+    "normal": {
+        "russian": [0.5, 0.8, 1.0, 1.0, 1.0, 1.0],
+        "english": [0.3, 0.7, 0.8, 0.9, 1.0, 1.0],
+    },
+    "fast": {
+        "russian": [0.8, 1.0, 1.2, 1.3, 1.4, 1.5],
+        "english": [0.7, 1.0, 1.1, 1.2, 1.3, 1.3],
+    },
+    "very_fast": {
+        "russian": [0.8, 1.1, 1.4, 1.5, 1.6, 1.8],
+        "english": [0.7, 1.0, 1.3, 1.5, 1.6, 1.7],
+    },
 }
+LEGACY_TEXT_LENGTH_BUCKETS = (3, 8, 18, 35, 45)
+LEGACY_SHORT_TEXT_NFE_STEP = 26
+LEGACY_LONG_TEXT_NFE_STEP = 18
+LEGACY_LONG_TEXT_THRESHOLD = 120
+LEGACY_FALLBACK_NFE_STEP = 16
+LEGACY_FALLBACK_SPEED = 1.0
+LEGACY_MIN_TAIL_SILENCE_MS = 800
+LEGACY_FADE_OUT_SEC = 0.3
+LEGACY_POST_FADE_SILENCE_SEC = 0.1
+
+
+class _LoggingProgress:
+    def __init__(self, request_logger) -> None:
+        self._logger = request_logger
+
+    def tqdm(self, iterable: Iterable[Any], desc: str | None = None, total: int | None = None) -> Iterator[Any]:
+        return _LoggingProgressIterator(self._logger, iterable, desc=desc, total=total)
+
+
+class _LoggingProgressIterator:
+    def __init__(self, request_logger, iterable: Iterable[Any], *, desc: str | None, total: int | None) -> None:
+        self._logger = request_logger
+        self._iterable = iterable
+        self._desc = desc or "inference"
+        self._total = total if total is not None else self._guess_total(iterable)
+
+    def __iter__(self) -> Iterator[Any]:
+        self._logger.info("Inference progress started desc=%s total=%s", self._desc, self._total)
+        for index, item in enumerate(self._iterable, start=1):
+            self._logger.info("Inference progress desc=%s step=%s total=%s", self._desc, index, self._total)
+            yield item
+        self._logger.info("Inference progress completed desc=%s total=%s", self._desc, self._total)
+
+    @staticmethod
+    def _guess_total(iterable: Iterable[Any]) -> int | None:
+        try:
+            return len(iterable)  # type: ignore[arg-type]
+        except Exception:
+            return None
 
 
 class F5Engine(BaseTtsEngine):
@@ -128,32 +187,56 @@ class F5Engine(BaseTtsEngine):
             raise ValueError(f"Reference audio not found: {ref_audio}")
 
         preset = (speed_preset or self.default_speed_preset or "normal").strip().lower()
-        speed_factor = SPEED_FACTORS.get(preset)
-        if speed_factor is None:
-            try:
-                speed_factor = float(preset)
-            except Exception:
-                speed_factor = SPEED_FACTORS["normal"]
-        speed_factor = max(0.1, min(2.0, float(speed_factor)))
+        detected_language = self._detect_language(text)
+        text_length = self._text_length_without_spaces(text)
+        speed_factor = self._resolve_speed_factor(
+            preset=preset,
+            language=detected_language,
+            text_length=text_length,
+        )
+        nfe_step = self._resolve_nfe_step(text_length)
 
         cfg_value = float(cfg_strength) if cfg_strength is not None else float(self.default_cfg_strength)
+        request_logger = get_request_logger(
+            logger,
+            merge_request_context(metadata or {}, selected_voice=voice, voice=voice),
+        )
 
         started = perf_counter()
+        request_logger.info(
+            "Engine synthesis started model=%s cfg_strength=%s speed_factor=%s nfe_step=%s language=%s text_length_no_spaces=%s remove_silence=%s",
+            self.model_name,
+            cfg_value,
+            round(speed_factor, 4),
+            nfe_step,
+            detected_language,
+            text_length,
+            bool(remove_silence),
+        )
         async with self._infer_lock:
-            wav, sample_rate = await asyncio.to_thread(
+            wav, sample_rate, used_speed_factor, used_nfe_step = await asyncio.to_thread(
                 self._infer_sync,
                 str(ref_audio),
                 (ref_text or "").strip(),
                 text.strip(),
                 cfg_value,
                 speed_factor,
+                nfe_step,
                 bool(remove_silence),
+                request_logger,
             )
+        wav = self._apply_legacy_tail_shaping(wav, sample_rate)
         wav = self._apply_volume(wav, float(volume_level))
         audio_bytes = self._wav_to_bytes(wav, sample_rate)
 
         duration_sec = len(wav) / float(sample_rate) if sample_rate > 0 else 0.0
         elapsed = perf_counter() - started
+        request_logger.info(
+            "Engine synthesis finished duration_sec=%s sample_rate=%s inference_time_sec=%s",
+            round(max(0.0, duration_sec), 3),
+            int(sample_rate),
+            round(elapsed, 4),
+        )
 
         return SynthesisResult(
             audio_bytes=audio_bytes,
@@ -165,7 +248,10 @@ class F5Engine(BaseTtsEngine):
                 "inference_time_sec": round(elapsed, 4),
                 "cfg_strength": cfg_value,
                 "speed_preset": preset,
-                "speed_factor": round(speed_factor, 4),
+                "speed_factor": round(used_speed_factor, 4),
+                "nfe_step": int(used_nfe_step),
+                "detected_language": detected_language,
+                "text_length_no_spaces": text_length,
                 "ref_audio_path": str(ref_audio),
                 "model_name": self.model_name,
             },
@@ -237,25 +323,132 @@ class F5Engine(BaseTtsEngine):
         gen_text: str,
         cfg_strength: float,
         speed_factor: float,
+        nfe_step: int,
         remove_silence: bool,
-    ) -> tuple[Any, int]:
+        request_logger,
+    ) -> tuple[Any, int, float, int]:
         assert self._model is not None
-        wav, sample_rate, _ = self._model.infer(
-            ref_file=ref_audio_path,
-            ref_text=ref_text,
-            gen_text=gen_text,
-            show_info=lambda *_: None,
-            progress=None,
-            target_rms=self.target_rms,
-            cross_fade_duration=self.cross_fade_duration,
-            sway_sampling_coef=self.sway_sampling_coef,
-            cfg_strength=cfg_strength,
-            nfe_step=self.nfe_step,
-            speed=speed_factor,
-            fix_duration=None,
-            remove_silence=remove_silence,
-        )
-        return wav, int(sample_rate)
+        infer_kwargs = {
+            "ref_file": ref_audio_path,
+            "ref_text": ref_text,
+            "gen_text": gen_text,
+            "show_info": lambda *messages: self._log_upstream_info(request_logger, *messages),
+            "progress": _LoggingProgress(request_logger),
+            "target_rms": self.target_rms,
+            "cross_fade_duration": self.cross_fade_duration,
+            "sway_sampling_coef": self.sway_sampling_coef,
+            "cfg_strength": cfg_strength,
+            "nfe_step": nfe_step,
+            "speed": speed_factor,
+            "fix_duration": None,
+            "remove_silence": remove_silence,
+        }
+        try:
+            wav, sample_rate, _ = self._model.infer(**infer_kwargs)
+            return wav, int(sample_rate), float(speed_factor), int(nfe_step)
+        except RuntimeError as error:
+            if not self._is_cuda_runtime_error(error):
+                raise
+            request_logger.warning(
+                "CUDA inference failed; retrying with legacy fallback speed=%s nfe_step=%s error=%s",
+                LEGACY_FALLBACK_SPEED,
+                LEGACY_FALLBACK_NFE_STEP,
+                error,
+            )
+            self._clear_cuda_cache()
+            fallback_kwargs = {
+                "ref_file": ref_audio_path,
+                "ref_text": ref_text,
+                "gen_text": gen_text,
+                "show_info": infer_kwargs["show_info"],
+                "progress": _LoggingProgress(request_logger),
+                "speed": LEGACY_FALLBACK_SPEED,
+                "nfe_step": LEGACY_FALLBACK_NFE_STEP,
+            }
+            wav, sample_rate, _ = self._model.infer(**fallback_kwargs)
+            return wav, int(sample_rate), LEGACY_FALLBACK_SPEED, LEGACY_FALLBACK_NFE_STEP
+
+    @staticmethod
+    def _log_upstream_info(request_logger, *messages: Any) -> None:
+        text = " ".join(str(message or "").strip() for message in messages if str(message or "").strip())
+        if not text:
+            return
+        request_logger.info("F5 upstream: %s", text)
+
+    @staticmethod
+    def _detect_language(text: str) -> str:
+        cyrillic_count = len(CYRILLIC_RE.findall(text or ""))
+        latin_count = len(LATIN_RE.findall(text or ""))
+        if cyrillic_count > latin_count:
+            return "russian"
+        if latin_count > cyrillic_count:
+            return "english"
+        if cyrillic_count > 0:
+            return "russian"
+        return "russian"
+
+    @staticmethod
+    def _text_length_without_spaces(text: str) -> int:
+        return len(re.sub(r"\s+", "", text or ""))
+
+    @classmethod
+    def _resolve_speed_factor(cls, *, preset: str, language: str, text_length: int) -> float:
+        try:
+            numeric = float(preset)
+        except Exception:
+            numeric = None
+        if numeric is not None:
+            return max(0.1, min(2.0, numeric))
+
+        normalized_preset = preset if preset in LEGACY_SPEED_PRESETS else "normal"
+        speed_values = LEGACY_SPEED_PRESETS[normalized_preset].get(language) or LEGACY_SPEED_PRESETS[normalized_preset]["russian"]
+        bucket_index = 0
+        for threshold in LEGACY_TEXT_LENGTH_BUCKETS:
+            if text_length <= threshold:
+                break
+            bucket_index += 1
+        bucket_index = min(bucket_index, len(speed_values) - 1)
+        return max(0.1, min(2.0, float(speed_values[bucket_index])))
+
+    def _resolve_nfe_step(self, text_length: int) -> int:
+        auto_nfe_step = LEGACY_LONG_TEXT_NFE_STEP if text_length > LEGACY_LONG_TEXT_THRESHOLD else LEGACY_SHORT_TEXT_NFE_STEP
+        return max(1, min(int(self.nfe_step), auto_nfe_step))
+
+    @staticmethod
+    def _is_cuda_runtime_error(error: RuntimeError) -> bool:
+        return "cuda" in str(error).lower()
+
+    @staticmethod
+    def _clear_cuda_cache() -> None:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        except Exception:
+            return
+
+    @staticmethod
+    def _apply_legacy_tail_shaping(wav: Any, sample_rate: int):
+        import numpy as np
+
+        if int(sample_rate) <= 0:
+            return np.asarray(wav, dtype=np.float32)
+
+        arr = np.asarray(wav, dtype=np.float32)
+        silence_samples = int(sample_rate * (LEGACY_MIN_TAIL_SILENCE_MS / 1000.0))
+        padded = np.concatenate([arr, np.zeros(silence_samples, dtype=np.float32)])
+
+        fade_samples = int(sample_rate * LEGACY_FADE_OUT_SEC)
+        if fade_samples > 0 and len(padded) > fade_samples:
+            fade = np.cos(np.linspace(0, np.pi / 2, fade_samples, dtype=np.float32))
+            padded[-fade_samples:] *= fade
+
+        post_silence_samples = int(sample_rate * LEGACY_POST_FADE_SILENCE_SEC)
+        if post_silence_samples > 0:
+            padded = np.concatenate([padded, np.zeros(post_silence_samples, dtype=np.float32)])
+        return padded
 
     @staticmethod
     def _apply_volume(wav: Any, volume_level: float):

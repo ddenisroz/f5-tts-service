@@ -42,7 +42,14 @@ async def synthesize(request: Request, payload: ProviderSynthesizeRequest) -> Pr
             meta={"request_in_sec": 0.0},
         )
 
-    raw_result = await request.app.state.provider_synthesize(payload.model_dump(mode="json"))
+    raw_payload = payload.model_dump(mode="json")
+    raw_metadata = dict(raw_payload.get("metadata") or {})
+    raw_payload["request_id"] = request_id
+    raw_metadata["request_id"] = request_id
+    if payload.event_id:
+        raw_metadata["event_id"] = payload.event_id
+    raw_payload["metadata"] = raw_metadata
+    raw_result = await request.app.state.provider_synthesize(raw_payload)
     elapsed = perf_counter() - started
     if not raw_result.get("success"):
         return ProviderSynthesizeResponse(

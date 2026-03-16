@@ -11,6 +11,7 @@ dependencies = [
     "pydantic-settings==2.11.0",
     "python-multipart==0.0.20",
     "num2words==0.5.14",
+    "ruaccent>=1.5.8.3",
     "numpy==2.2.6",
     "soundfile==0.13.1",
     "pydub==0.25.1",

@@ -5,9 +5,9 @@ Provider-level F5 TTS engine service for Phase 1 architecture:
 - base: `SWivid/F5-TTS` (vendor-pinned in `vendor/F5-TTS`)
 - RU model weights: `Misha24-10/F5-TTS_RUSSIAN`
 - RU preprocessing pipeline:
-  - yo-fication
-  - number/date/time/money normalization
-  - accent dictionary
+  - legacy-style yo-fication with bundled `app/ru_pipeline/yo.dat`
+  - date/time/money/number normalization
+  - `RUAccent` stress placement with optional JSON override dictionary
 - internal provider API:
   - `POST /v1/synthesize`
   - `GET /health/live`
@@ -39,6 +39,7 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8011
 - Audio files are served under `/api/tts/audio/{filename}`.
 - Auth is strict API key only (`F5_TTS_SERVICE_API_KEYS`), no JWT/no-anon mode.
 - Text input is guarded by `F5_TTS_MAX_INPUT_TEXT_LENGTH`.
+- Synthesis logs now include request-context fields (`request_id`, `event_id`, `user_id`, `channel_name`, selected voice) plus upstream F5 progress/info messages in the standard service logger.
 - The service no longer creates an empty `female_1` placeholder. `female_1` and `default_voice` are treated as legacy aliases for default selection, and synthesis now requires a real uploaded/reference-backed voice.
 - Voice catalog storage:
   - default fallback: file store (`data/voices/state.json`)

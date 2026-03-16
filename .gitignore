@@ -14,4 +14,7 @@ data/limits/*
 .ruff_cache/
 pytest-cache-files-*/
 tmp_runtime_logs/
+.pytest_tmp/
+data/pytest_tmp2/
+data/test_tmp/
 *.tmp

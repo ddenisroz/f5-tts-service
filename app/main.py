@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -10,6 +11,7 @@ from fastapi.responses import JSONResponse
 from .config import Settings, get_settings
 from .engine.f5_engine import F5Engine
 from .limits_store import TTSLimitsStore
+from .logging_utils import build_request_context, get_request_logger
 from .routers import admin, health, provider, tts_compat
 from .ru_pipeline import RuPipeline
 from .storage.audio_store import AudioStore
@@ -36,16 +38,55 @@ def _as_bool(value: object) -> bool:
 
 def _make_provider_synthesize_fn(app: FastAPI):
     async def _provider_synthesize(payload: dict[str, Any]) -> dict[str, Any]:
+        metadata = dict(payload.get("metadata") or {})
+        request_id = str(payload.get("request_id") or metadata.get("request_id") or uuid.uuid4().hex)
+        event_id = payload.get("event_id") or metadata.get("event_id")
+        payload["request_id"] = request_id
+        if event_id:
+            payload["event_id"] = str(event_id)
+        metadata["request_id"] = request_id
+        if event_id:
+            metadata["event_id"] = str(event_id)
+        request_logger = get_request_logger(
+            logger,
+            build_request_context(
+                request_id=request_id,
+                event_id=str(event_id) if event_id else None,
+                user_id=payload.get("user_id"),
+                channel_name=payload.get("channel_name"),
+                author=payload.get("author"),
+                voice=str(payload.get("voice") or ""),
+            ),
+        )
         try:
-            text_ru = app.state.ru_pipeline.process(payload["text"])
+            request_logger.info(
+                "Accepted synthesis request text_chars=%s volume_level=%s compat=%s",
+                len(str(payload.get("text") or "")),
+                payload.get("volume_level"),
+                bool(metadata.get("compat")),
+            )
+            text_ru = app.state.ru_pipeline.process(str(payload.get("text") or ""), logger=request_logger)
             if not text_ru:
                 raise ValueError("Text is empty after RU preprocessing")
             synth_context = await resolve_synthesis_context(app, payload)
-            metadata = payload.get("metadata") or {}
+            request_logger = request_logger.bind(selected_voice=synth_context["selected_voice"])
+            request_logger.info(
+                "Resolved synthesis context ref_audio_path=%s has_reference_text=%s cfg_strength=%s speed_preset=%s",
+                synth_context["reference_audio_path"],
+                bool(synth_context["reference_text"]),
+                synth_context["cfg_strength"],
+                synth_context["speed_preset"],
+            )
             if "remove_silence" in payload:
                 remove_silence = _as_bool(payload.get("remove_silence"))
             else:
                 remove_silence = _as_bool(metadata.get("remove_silence"))
+            request_logger.info(
+                "Starting synthesis remove_silence=%s cfg_strength=%s speed_preset=%s",
+                remove_silence,
+                synth_context["cfg_strength"],
+                synth_context["speed_preset"],
+            )
             result = await app.state.engine.synthesize(
                 text=text_ru,
                 voice=synth_context["selected_voice"],
@@ -55,9 +96,15 @@ def _make_provider_synthesize_fn(app: FastAPI):
                 cfg_strength=float(synth_context["cfg_strength"]),
                 speed_preset=synth_context["speed_preset"],
                 remove_silence=remove_silence,
-                metadata=metadata,
+                metadata={**metadata, **request_logger.extra},
             )
             filename = app.state.audio_store.save_bytes(result.audio_bytes, suffix=".wav")
+            request_logger.info(
+                "Synthesis completed audio_file=%s duration_sec=%s inference_time_sec=%s",
+                filename,
+                round(result.duration_sec, 3),
+                result.meta.get("inference_time_sec"),
+            )
             return {
                 "success": True,
                 "audio_url": f"/api/tts/audio/{filename}",
@@ -67,7 +114,7 @@ def _make_provider_synthesize_fn(app: FastAPI):
                 "meta": result.meta,
             }
         except Exception as error:  # pragma: no cover - safety
-            logger.exception("Synthesis error")
+            request_logger.exception("Synthesis error")
             return {"success": False, "error": str(error)}
 
     return _provider_synthesize

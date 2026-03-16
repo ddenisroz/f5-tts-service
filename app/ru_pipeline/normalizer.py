@@ -3,7 +3,12 @@ from __future__ import annotations
 import re
 from typing import Callable
 
-from num2words import num2words
+from .date_converter import convert_all_dates_in_text
+from .money_converter import convert_all_money_in_text
+from .number_converter import convert_numbers_in_text, integer_to_words
+from .time_converter import convert_all_time_in_text
+
+num2words = lambda number, lang="ru": integer_to_words(int(number))
 
 
 DATE_RE = re.compile(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})\b")
@@ -87,5 +92,13 @@ def normalize_text(text: str) -> str:
     text = _apply_regex(text, MONEY_USD_RE, repl_usd)
     text = _apply_regex(text, MONEY_RUB_RE, repl_rub)
     text = _apply_regex(text, NUMBER_RE, repl_number)
+    return text
+
+
+def normalize_text(text: str) -> str:
+    text = convert_all_dates_in_text(text)
+    text = convert_all_time_in_text(text)
+    text = convert_all_money_in_text(text)
+    text = convert_numbers_in_text(text)
     return text
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,8 @@ async def synthesize_channel(request: Request, payload: CompatSynthesizeChannelR
     cfg_strength = voice_settings.get("cfg_strength", tts_settings.get("cfg_strength"))
     speed_preset = voice_settings.get("speed_preset", tts_settings.get("speed_preset"))
     remove_silence = _as_bool(voice_settings.get("remove_silence", tts_settings.get("remove_silence", False)))
+    request_id = str(payload.request_id or tts_settings.get("request_id") or uuid.uuid4().hex)
+    event_id = payload.event_id or tts_settings.get("event_id")
 
     user_id = payload.user_id
     limits_service_enabled = bool(getattr(request.app.state.settings, "limits_enabled", False))
@@ -103,18 +106,20 @@ async def synthesize_channel(request: Request, payload: CompatSynthesizeChannelR
         "author": payload.author,
         "user_id": user_id,
         "volume_level": payload.volume_level,
+        "request_id": request_id,
+        "event_id": event_id,
         "cfg_strength": cfg_strength,
         "speed_preset": speed_preset,
         "remove_silence": remove_silence,
-            "metadata": {
-                "compat": True,
-                "cfg_strength": cfg_strength,
-                "speed_preset": speed_preset,
-                "remove_silence": remove_silence,
-                "request_id": payload.request_id or tts_settings.get("request_id"),
-                "event_id": payload.event_id or tts_settings.get("event_id"),
-            },
-        }
+        "metadata": {
+            "compat": True,
+            "cfg_strength": cfg_strength,
+            "speed_preset": speed_preset,
+            "remove_silence": remove_silence,
+            "request_id": request_id,
+            "event_id": event_id,
+        },
+    }
     result = await request.app.state.provider_synthesize(provider_request)
     success = bool(result.get("success"))
     duration = result.get("duration")
