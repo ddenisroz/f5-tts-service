@@ -158,6 +158,8 @@ async def lifespan(app: FastAPI):
             checkpoint_file=settings.checkpoint_file,
             vocab_file=settings.vocab_file,
             hf_cache_dir=settings.hf_cache_path,
+            vocoder_local_dir=settings.vocoder_local_path,
+            vocoder_repo_id=settings.vocoder_repo_id,
             device=settings.device,
             ode_method=settings.ode_method,
             use_ema=settings.use_ema,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import tempfile
@@ -14,6 +15,7 @@ from .voice_store_postgres import PostgresVoiceStore
 
 DEFAULT_VOICE_NAME = "default_voice"
 DEFAULT_VOICE_ALIASES = {DEFAULT_VOICE_NAME, "female_1", "default"}
+logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -269,13 +271,26 @@ class FileVoiceStore:
             dir=str(self.state_path.parent),
             text=True,
         )
+        replaced = False
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
                 handle.write(body)
-            os.replace(tmp_name, self.state_path)
+            try:
+                os.replace(tmp_name, self.state_path)
+            except PermissionError as error:
+                logger.warning(
+                    "Atomic voice state replace failed; falling back to direct write path=%s error=%s",
+                    self.state_path,
+                    error,
+                )
+                self.state_path.write_text(body, encoding="utf-8")
+            replaced = True
         finally:
-            if os.path.exists(tmp_name):
-                os.remove(tmp_name)
+            if (not replaced) and os.path.exists(tmp_name):
+                try:
+                    os.remove(tmp_name)
+                except PermissionError as error:
+                    logger.warning("Temporary voice state cleanup skipped path=%s error=%s", tmp_name, error)
 
     def _active_voices_for_user(self, user_id: int | None) -> list[dict[str, Any]]:
         voices = self._read_state()["voices"]

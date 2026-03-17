@@ -21,6 +21,7 @@ from .audio_processing import (
 FILENAME_PART_RE = re.compile(r"[^0-9A-Za-z\u0400-\u04FF_-]+")
 logger = logging.getLogger(__name__)
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+CLEANUP_RETRY_DELAYS_SEC = (0.05, 0.1, 0.2)
 
 
 def _create_temp_path(*, suffix: str) -> Path:
@@ -32,6 +33,26 @@ def _create_temp_path(*, suffix: str) -> Path:
 def _safe_filename_part(raw: str) -> str:
     normalized = FILENAME_PART_RE.sub("_", (raw or "").strip()).strip("_")
     return normalized[:64] or "voice"
+
+
+async def _cleanup_temp_path(path: Path) -> None:
+    if not path.exists():
+        return
+
+    for delay in (*CLEANUP_RETRY_DELAYS_SEC, None):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError as error:
+            if delay is None:
+                logger.warning("Temporary upload file cleanup skipped path=%s error=%s", path, error)
+                return
+            await asyncio.sleep(delay)
+        except Exception as error:
+            logger.warning("Temporary upload file cleanup failed path=%s error=%s", path, error)
+            return
 
 
 async def transcribe_voice_file(app, voice_path: Path) -> str:
@@ -93,7 +114,5 @@ async def prepare_uploaded_voice_file(
         return target_path, reference_text
     finally:
         await upload.close()
-        if temp_input.exists():
-            temp_input.unlink(missing_ok=True)
-        if temp_wav.exists():
-            temp_wav.unlink(missing_ok=True)
+        await _cleanup_temp_path(temp_input)
+        await _cleanup_temp_path(temp_wav)

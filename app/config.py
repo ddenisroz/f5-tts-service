@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     checkpoint_file: str = Field("", alias="F5_TTS_CHECKPOINT_FILE")
     vocab_file: str = Field("", alias="F5_TTS_VOCAB_FILE")
     hf_cache_dir: str = Field("models/cache", alias="F5_TTS_HF_CACHE_DIR")
+    vocoder_local_dir: str = Field("models/vocos-mel-24khz", alias="F5_TTS_VOCODER_LOCAL_DIR")
+    vocoder_repo_id: str = Field("charactr/vocos-mel-24khz", alias="F5_TTS_VOCODER_REPO_ID")
     device: str = Field("", alias="F5_TTS_DEVICE")
     ode_method: str = Field("euler", alias="F5_TTS_ODE_METHOD")
     use_ema: bool = Field(True, alias="F5_TTS_USE_EMA")
@@ -115,6 +117,10 @@ class Settings(BaseSettings):
     @property
     def hf_cache_path(self) -> Path:
         return self._resolve_path(self.hf_cache_dir)
+
+    @property
+    def vocoder_local_path(self) -> Path:
+        return self._resolve_path(self.vocoder_local_dir)
 
     @property
     def upstream_path(self) -> Path:

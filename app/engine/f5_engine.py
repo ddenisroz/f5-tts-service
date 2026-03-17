@@ -5,6 +5,7 @@ import importlib
 import io
 import logging
 import re
+import shutil
 import sys
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -92,6 +93,8 @@ class F5Engine(BaseTtsEngine):
         checkpoint_file: str,
         vocab_file: str,
         hf_cache_dir: Path,
+        vocoder_local_dir: Path,
+        vocoder_repo_id: str,
         device: str,
         ode_method: str,
         use_ema: bool,
@@ -109,6 +112,8 @@ class F5Engine(BaseTtsEngine):
         self.checkpoint_file = checkpoint_file.strip()
         self.vocab_file = vocab_file.strip()
         self.hf_cache_dir = hf_cache_dir
+        self.vocoder_local_dir = vocoder_local_dir
+        self.vocoder_repo_id = vocoder_repo_id.strip() or "charactr/vocos-mel-24khz"
         self.device = (device or "").strip()
         self.ode_method = ode_method
         self.use_ema = bool(use_ema)
@@ -154,8 +159,11 @@ class F5Engine(BaseTtsEngine):
         ckpt_file = self._resolve_checkpoint_file()
         vocab_file = self._resolve_vocab_file()
         self.hf_cache_dir.mkdir(parents=True, exist_ok=True)
+        resolved_vocoder_dir = self._ensure_local_vocoder_assets()
 
         logger.info("Loading F5 model model=%s ckpt=%s", self.model_name, ckpt_file)
+        if resolved_vocoder_dir is not None:
+            logger.info("Using local Vocos assets path=%s", resolved_vocoder_dir)
         self._model = await asyncio.to_thread(
             self._create_model,
             ckpt_file,
@@ -267,9 +275,72 @@ class F5Engine(BaseTtsEngine):
             "use_ema": self.use_ema,
             "hf_cache_dir": str(self.hf_cache_dir),
         }
+        if self._has_vocoder_assets(self.vocoder_local_dir):
+            kwargs["vocoder_local_path"] = str(self.vocoder_local_dir)
         if self.device:
             kwargs["device"] = self.device
         return self._api_cls(**kwargs)
+
+    def _has_vocoder_assets(self, directory: Path) -> bool:
+        return (directory / "config.yaml").exists() and (directory / "pytorch_model.bin").exists()
+
+    def _ensure_local_vocoder_assets(self) -> Path | None:
+        if self._has_vocoder_assets(self.vocoder_local_dir):
+            return self.vocoder_local_dir
+
+        if self._seed_vocoder_dir_from_hf_cache() and self._has_vocoder_assets(self.vocoder_local_dir):
+            logger.info("Seeded local Vocos mirror from HF cache path=%s", self.vocoder_local_dir)
+            return self.vocoder_local_dir
+
+        if self._download_vocoder_to_local_dir() and self._has_vocoder_assets(self.vocoder_local_dir):
+            logger.info("Bootstrapped local Vocos mirror repo=%s path=%s", self.vocoder_repo_id, self.vocoder_local_dir)
+            return self.vocoder_local_dir
+
+        logger.warning("Local Vocos assets are unavailable; upstream may fall back to Hugging Face download.")
+        return None
+
+    def _seed_vocoder_dir_from_hf_cache(self) -> bool:
+        snapshot_root = self.hf_cache_dir / f"models--{self.vocoder_repo_id.replace('/', '--')}" / "snapshots"
+        if not snapshot_root.exists():
+            return False
+
+        snapshots = [path for path in snapshot_root.iterdir() if path.is_dir()]
+        snapshots.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        for snapshot in snapshots:
+            config_path = snapshot / "config.yaml"
+            model_path = snapshot / "pytorch_model.bin"
+            if not (config_path.exists() and model_path.exists()):
+                continue
+
+            self.vocoder_local_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(config_path, self.vocoder_local_dir / "config.yaml")
+            shutil.copy2(model_path, self.vocoder_local_dir / "pytorch_model.bin")
+            return True
+
+        return False
+
+    def _download_vocoder_to_local_dir(self) -> bool:
+        try:
+            from huggingface_hub import hf_hub_download
+        except Exception as error:
+            logger.warning("Could not import huggingface_hub for Vocos bootstrap: %s", error)
+            return False
+
+        try:
+            self.vocoder_local_dir.mkdir(parents=True, exist_ok=True)
+            for filename in ("config.yaml", "pytorch_model.bin"):
+                downloaded_file = Path(
+                    hf_hub_download(
+                        repo_id=self.vocoder_repo_id,
+                        cache_dir=str(self.hf_cache_dir),
+                        filename=filename,
+                    )
+                )
+                shutil.copy2(downloaded_file, self.vocoder_local_dir / filename)
+            return True
+        except Exception as error:
+            logger.warning("Failed to bootstrap local Vocos mirror repo=%s: %s", self.vocoder_repo_id, error)
+            return False
 
     def _resolve_checkpoint_file(self) -> str:
         if self.checkpoint_file:

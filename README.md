@@ -32,6 +32,8 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8011
 
 - `F5_TTS_ENGINE_MODE=real` is the default. Service starts only with real engine integration.
 - All relative paths are resolved from `F5_TTS_BASE_DIR` (default `.`).
+- Vocos assets are mirrored into `F5_TTS_VOCODER_LOCAL_DIR` (default `models/vocos-mel-24khz`). If the files already exist there, startup stays local and does not need a new HF fetch.
+- If `models/cache` already contains the HF snapshot, the service now seeds the local Vocos mirror from that cache before trying any new download.
 - Voice uploads require `ffmpeg` (preferred) or `pydub` backend, and store WAV in `F5_TTS_VOICES_DIR` (default `data/voices`).
 - Upload security/quality controls:
   - `F5_TTS_VOICE_UPLOAD_MAX_BYTES`
