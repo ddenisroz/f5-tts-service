@@ -26,6 +26,8 @@ class _FakeModel:
 
 
 def _build_engine(tmp_path: Path, model: _FakeModel | None = None) -> F5Engine:
+    vocoder_dir = tmp_path / "vocoder"
+    vocoder_dir.mkdir(parents=True, exist_ok=True)
     engine = F5Engine(
         mode="real",
         upstream_dir=tmp_path,
@@ -34,6 +36,8 @@ def _build_engine(tmp_path: Path, model: _FakeModel | None = None) -> F5Engine:
         checkpoint_file="",
         vocab_file="",
         hf_cache_dir=tmp_path,
+        vocoder_local_dir=vocoder_dir,
+        vocoder_repo_id="charactr/vocos-mel-24khz",
         device="cpu",
         ode_method="euler",
         use_ema=True,
