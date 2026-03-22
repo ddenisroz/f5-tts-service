@@ -4,14 +4,17 @@ import asyncio
 import importlib
 import io
 import logging
+import os
 import re
 import shutil
 import sys
+import tempfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from ..audio_processing import convert_audio_to_wav
 from ..logging_utils import get_request_logger, merge_request_context
 from .base import BaseTtsEngine, SynthesisResult
 
@@ -50,6 +53,7 @@ LEGACY_FALLBACK_SPEED = 1.0
 LEGACY_MIN_TAIL_SILENCE_MS = 800
 LEGACY_FADE_OUT_SEC = 0.3
 LEGACY_POST_FADE_SILENCE_SEC = 0.1
+REFERENCE_AUDIO_SAMPLE_RATE = 24000
 
 
 class _LoggingProgress:
@@ -419,7 +423,20 @@ class F5Engine(BaseTtsEngine):
             return wav, int(sample_rate), float(speed_factor), int(nfe_step)
         except RuntimeError as error:
             if not self._is_cuda_runtime_error(error):
-                raise
+                standardized_ref_audio = self._create_standard_reference_audio_retry(
+                    ref_audio_path,
+                    request_logger,
+                    error,
+                )
+                if standardized_ref_audio is None:
+                    raise
+                try:
+                    retry_kwargs = dict(infer_kwargs)
+                    retry_kwargs["ref_file"] = standardized_ref_audio
+                    wav, sample_rate, _ = self._model.infer(**retry_kwargs)
+                    return wav, int(sample_rate), float(speed_factor), int(nfe_step)
+                finally:
+                    Path(standardized_ref_audio).unlink(missing_ok=True)
             request_logger.warning(
                 "CUDA inference failed; retrying with legacy fallback speed=%s nfe_step=%s error=%s",
                 LEGACY_FALLBACK_SPEED,
@@ -438,6 +455,37 @@ class F5Engine(BaseTtsEngine):
             }
             wav, sample_rate, _ = self._model.infer(**fallback_kwargs)
             return wav, int(sample_rate), LEGACY_FALLBACK_SPEED, LEGACY_FALLBACK_NFE_STEP
+
+    def _create_standard_reference_audio_retry(
+        self,
+        ref_audio_path: str,
+        request_logger,
+        error: RuntimeError,
+    ) -> str | None:
+        if not self._is_reference_audio_load_error(error):
+            return None
+
+        ref_audio = Path(ref_audio_path).resolve()
+        fd, temp_name = tempfile.mkstemp(prefix="f5_ref_", suffix=".wav")
+        os.close(fd)
+        try:
+            Path(temp_name).unlink(missing_ok=True)
+            convert_audio_to_wav(
+                ref_audio,
+                Path(temp_name),
+                sample_rate=REFERENCE_AUDIO_SAMPLE_RATE,
+                channels=1,
+            )
+            request_logger.warning(
+                "Reference audio load failed in upstream; retrying with normalized WAV source=%s temp=%s error=%s",
+                ref_audio,
+                temp_name,
+                error,
+            )
+            return temp_name
+        except Exception:
+            Path(temp_name).unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def _log_upstream_info(request_logger, *messages: Any) -> None:
@@ -488,6 +536,23 @@ class F5Engine(BaseTtsEngine):
     @staticmethod
     def _is_cuda_runtime_error(error: RuntimeError) -> bool:
         return "cuda" in str(error).lower()
+
+    @staticmethod
+    def _is_reference_audio_load_error(error: RuntimeError) -> bool:
+        text = str(error or "").lower()
+        markers = (
+            "torchaudio",
+            "failed to open",
+            "error opening",
+            "could not open",
+            "invalid data",
+            "format not recognised",
+            "format not recognized",
+            "no backend is available",
+            "appropriate backend",
+            "ffmpeg",
+        )
+        return any(marker in text for marker in markers)
 
     @staticmethod
     def _clear_cuda_cache() -> None:

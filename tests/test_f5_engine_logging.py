@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from app.engine import f5_engine as f5_engine_module
 from app.engine.f5_engine import F5Engine
 
 
@@ -22,6 +23,17 @@ class _FakeModel:
             pass
         if self.fail_first_cuda and len(self.calls) == 1:
             raise RuntimeError("CUDA error: out of memory")
+        return np.full(2400, 0.5, dtype=np.float32), 24000, None
+
+
+class _ReferenceAudioRetryModel:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def infer(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        if len(self.calls) == 1:
+            raise RuntimeError("Failed to open input file")
         return np.full(2400, 0.5, dtype=np.float32), 24000, None
 
 
@@ -162,3 +174,41 @@ def test_f5_engine_retries_cuda_failure_with_legacy_fallback(workspace_tmp_path,
     assert result.meta["nfe_step"] == 16
     messages = [record.getMessage() for record in caplog.records]
     assert any("CUDA inference failed; retrying with legacy fallback" in message for message in messages)
+
+
+def test_f5_engine_retries_with_normalized_reference_audio(workspace_tmp_path, monkeypatch, caplog) -> None:
+    model = _ReferenceAudioRetryModel()
+    engine = _build_engine(workspace_tmp_path, model=model)
+    ref_audio = workspace_tmp_path / "ref.wav"
+    ref_audio.write_bytes(b"stub")
+
+    converted_pairs: list[tuple[Path, Path]] = []
+
+    def _fake_convert_audio_to_wav(input_path: Path, output_path: Path, *, sample_rate: int = 24000, channels: int = 1) -> None:
+        converted_pairs.append((Path(input_path), Path(output_path)))
+        assert sample_rate == 24000
+        assert channels == 1
+        Path(output_path).write_bytes(b"RIFFstubWAVE")
+
+    monkeypatch.setattr(f5_engine_module, "convert_audio_to_wav", _fake_convert_audio_to_wav)
+    caplog.set_level(logging.INFO)
+
+    result = asyncio.run(
+        engine.synthesize(
+            text="да",
+            voice="demo",
+            ref_audio_path=str(ref_audio),
+            ref_text="пример",
+            metadata={"request_id": "req-engine-audio-retry"},
+        )
+    )
+
+    assert result.sample_rate == 24000
+    assert len(model.calls) == 2
+    assert model.calls[0]["ref_file"] == str(ref_audio.resolve())
+    assert model.calls[1]["ref_file"] != str(ref_audio.resolve())
+    assert Path(model.calls[1]["ref_file"]).suffix == ".wav"
+    assert not Path(model.calls[1]["ref_file"]).exists()
+    assert converted_pairs == [(ref_audio.resolve(), Path(model.calls[1]["ref_file"]))]
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("retrying with normalized WAV" in message for message in messages)
