@@ -3,6 +3,10 @@ __pycache__/
 *.pyc.*
 .venv/
 .pytest_cache/
+_pytest_cache/
+_pytest_tmp/
+pytest-cache-files-*
+.tmp/
 data/audio/*
 !data/audio/.gitkeep
 data/voices/*
