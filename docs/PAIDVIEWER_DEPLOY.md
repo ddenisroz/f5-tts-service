@@ -1,33 +1,37 @@
 ﻿# Paidviewer Deploy Notes
 
-## Role
+Этот файл нужен тому, кто отдельно сопровождает `f5-tts-service`.
 
-`f5-tts-service` is the F5 provider runtime behind Paidviewer.
+Если ты запускаешь весь проект целиком, начни с `paidviewer_tools/docs/QUICKSTART.md` в основном репозитории.
 
-It is used in two contexts:
+## Что это за сервис
 
-- cloud mode through `tts-gateway`
-- self-host mode behind `tts_worker_agent`
+`f5-tts-service` — это F5 runtime для Paidviewer.
 
-## Required checks
+Он используется в двух случаях:
+
+- в `cloud` режиме за `tts-gateway`
+- в `self_host` режиме за `tts_worker_agent`
+
+## Что обязательно должно работать
 
 - `GET /health/live`
 - `GET /health/ready`
 - `POST /v1/synthesize`
-- one voice/admin compatibility request under `/api/tts/*`
+- хотя бы один совместимый voice/admin запрос под `/api/tts/*`
 
-## State boundary
+## Что этот сервис хранит
 
-This service may keep only F5-local operational state:
+Только F5-локальное состояние:
 
 - voice catalog
 - enabled voice pool
-- F5-local limits/usage
+- локальные лимиты и usage
 
-User-facing routing/settings remain owned by `bot_service`.
+Пользовательские настройки, маршрутизация и продуктовая логика остаются в `bot_service`.
 
-## Upstream discipline
+## Что важно перед релизом
 
-- keep `vendor/F5-TTS` aligned with `.upstream-pin`
-- do not release from an unexplained dirty vendor state
-- avoid `latest` tags in deploy examples
+- `vendor/F5-TTS` должен совпадать с `.upstream-pin`
+- нельзя выпускаться из необъяснённого dirty vendor state
+- в deploy-примерах нельзя использовать `latest`

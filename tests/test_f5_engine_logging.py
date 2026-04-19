@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +36,16 @@ class _ReferenceAudioRetryModel:
         if len(self.calls) == 1:
             raise RuntimeError("Failed to open input file")
         return np.full(2400, 0.5, dtype=np.float32), 24000, None
+
+
+def test_f5_engine_installs_inference_only_trainer_stub(monkeypatch) -> None:
+    monkeypatch.delitem(sys.modules, f5_engine_module.TRAINER_MODULE_NAME, raising=False)
+
+    F5Engine._install_inference_trainer_stub()
+
+    trainer_module = sys.modules[f5_engine_module.TRAINER_MODULE_NAME]
+    with pytest.raises(RuntimeError, match="inference service runtime"):
+        trainer_module.Trainer()
 
 
 def _build_engine(tmp_path: Path, model: _FakeModel | None = None) -> F5Engine:

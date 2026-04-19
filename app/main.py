@@ -149,7 +149,11 @@ async def lifespan(app: FastAPI):
         await voice_store.startup()
         await limits_store.startup()
 
-        ru_pipeline = RuPipeline.create(settings.ru_yo_dict_path, settings.ru_accents_path)
+        ru_pipeline = RuPipeline.create(
+            settings.ru_yo_dict_path,
+            settings.ru_accents_path,
+            ruaccent_enabled=settings.ruaccent_enabled,
+        )
         engine = F5Engine(
             mode=settings.engine_mode,
             upstream_dir=settings.upstream_path,

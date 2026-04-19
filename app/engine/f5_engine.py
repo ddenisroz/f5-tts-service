@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import tempfile
+import types
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from time import perf_counter
@@ -19,6 +20,7 @@ from ..logging_utils import get_request_logger, merge_request_context
 from .base import BaseTtsEngine, SynthesisResult
 
 logger = logging.getLogger(__name__)
+TRAINER_MODULE_NAME = "f5_tts.model.trainer"
 
 CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
 LATIN_RE = re.compile(r"[A-Za-z]")
@@ -152,7 +154,7 @@ class F5Engine(BaseTtsEngine):
             sys.path.insert(0, src_dir_str)
 
         try:
-            module = importlib.import_module("f5_tts.api")
+            module = self._import_f5_api_module()
             self._api_cls = getattr(module, "F5TTS")
         except Exception as error:
             raise RuntimeError(
@@ -175,6 +177,33 @@ class F5Engine(BaseTtsEngine):
         )
         self._ready = True
         logger.info("F5 model is ready")
+
+    def _import_f5_api_module(self):
+        try:
+            return importlib.import_module("f5_tts.api")
+        except Exception as first_error:
+            logger.warning(
+                "F5 upstream import failed once; retrying with inference-only trainer stub: %s",
+                first_error,
+            )
+            self._install_inference_trainer_stub()
+            sys.modules.pop("f5_tts.api", None)
+            sys.modules.pop("f5_tts.model", None)
+            return importlib.import_module("f5_tts.api")
+
+    @staticmethod
+    def _install_inference_trainer_stub() -> None:
+        if TRAINER_MODULE_NAME in sys.modules:
+            return
+
+        trainer_module = types.ModuleType(TRAINER_MODULE_NAME)
+
+        class _InferenceOnlyTrainer:
+            def __init__(self, *_, **__) -> None:
+                raise RuntimeError("F5 Trainer is unavailable in the inference service runtime")
+
+        trainer_module.Trainer = _InferenceOnlyTrainer
+        sys.modules[TRAINER_MODULE_NAME] = trainer_module
 
     async def synthesize(
         self,

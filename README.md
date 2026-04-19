@@ -1,39 +1,66 @@
 ﻿# f5-tts-service
 
-Provider-level F5 runtime for Paidviewer.
+F5 runtime-сервис для Paidviewer.
 
-## Production role
+## Кому нужен этот репозиторий
 
-`f5-tts-service` is the F5 engine service used by Paidviewer for:
+Этот репозиторий нужен тому, кто поднимает или обслуживает F5-провайдер для Paidviewer.
+
+Если ты обычный пользователь Paidviewer и не занимаешься инфраструктурой F5, этот репозиторий тебе обычно не нужен.
+
+## Роль в системе
+
+`f5-tts-service` — это provider-level сервис для F5.
+
+Он используется для:
 
 - `POST /v1/synthesize`
-- F5 voice/admin compatibility APIs under `/api/tts/*` and `/api/admin/*`
-- local F5 voice and limits storage
+- F5 voice/admin compatibility API под `/api/tts/*` и `/api/admin/*`
+- локального хранения F5 voice и service-level состояния
 
-## Upstream and pinning
+## Что важно понимать
 
-- upstream is vendored in `vendor/F5-TTS`
-- pinned commit is recorded in `.upstream-pin`
-- use `scripts/pin_upstream.ps1` when intentionally refreshing upstream
+- это не основной продуктовый backend
+- `bot_service` остаётся источником истины для настроек пользователя и маршрутизации
+- `f5-tts-service` хранит только F5-специфичное операционное состояние
 
-## Run
+## Upstream и pinning
+
+- upstream лежит в `vendor/F5-TTS`
+- зафиксированный commit указан в `.upstream-pin`
+- для осознанного обновления upstream используй `scripts/pin_upstream.ps1`
+
+## Быстрый запуск
+
+Базовый runtime: Python `3.12`.
+
+### Docker
 
 ```bash
-uv sync
+docker build -t f5-tts-service:local .
+docker run --rm -p 127.0.0.1:8011:8011 \
+  -e F5_TTS_SERVICE_API_KEYS=change-me \
+  -e F5_TTS_ENGINE_MODE=fake \
+  -e F5_TTS_ENABLE_PREWARM=false \
+  -e F5_TTS_TRANSCRIBER_ENABLED=false \
+  -e F5_TTS_RUACCENT_ENABLED=false \
+  f5-tts-service:local
+```
+
+Этот smoke-путь проверяет контейнер без загрузки модели. Для production включай `F5_TTS_ENGINE_MODE=real`, постоянное хранилище, БД и реальные веса.
+
+### Локально без Docker
+
+```bash
+uv sync --python 3.12
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8011
 ```
 
-## Required runtime notes
-
-- this repo is the F5 provider service, not the product orchestrator
-- `bot_service` remains the source of truth for user settings and routing policy
-- `f5-tts-service` stores only F5-local operational state
-
-## Health
+## Health endpoints
 
 - `GET /health/live`
 - `GET /health/ready`
 
-## Paidviewer deploy notes
+## Для деплоя
 
-See `docs/PAIDVIEWER_DEPLOY.md` for the short production checklist.
+Короткий deploy/checklist лежит в `docs/PAIDVIEWER_DEPLOY.md`.

@@ -61,6 +61,7 @@ class Settings(BaseSettings):
 
     ru_yo_dict_file: str = Field("app/data/yo_words.json", alias="F5_TTS_RU_YO_DICT_FILE")
     ru_accents_file: str = Field("app/data/accents.json", alias="F5_TTS_RU_ACCENTS_FILE")
+    ruaccent_enabled: bool = Field(True, alias="F5_TTS_RUACCENT_ENABLED")
     transcriber_enabled: bool = Field(True, alias="F5_TTS_TRANSCRIBER_ENABLED")
     transcriber_preload: bool = Field(False, alias="F5_TTS_TRANSCRIBER_PRELOAD")
     transcriber_model: str = Field("turbo", alias="F5_TTS_TRANSCRIBER_MODEL")

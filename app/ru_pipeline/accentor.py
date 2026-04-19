@@ -14,14 +14,18 @@ DEFAULT_ACCENT_OVERRIDES_PATH = Path(__file__).with_name("accent_overrides.json"
 
 
 class Accentor:
-    def __init__(self, dictionary_path: Path, *, model_size: str = "turbo") -> None:
+    def __init__(self, dictionary_path: Path, *, model_size: str = "turbo", enabled: bool = True) -> None:
         self.dictionary: dict[str, str] = {}
         self.model_size = model_size
+        self.enabled = enabled
         self.accentizer: Any | None = None
         self._load_dictionary(DEFAULT_ACCENT_OVERRIDES_PATH)
         if dictionary_path.resolve() != DEFAULT_ACCENT_OVERRIDES_PATH.resolve():
             self._load_dictionary(dictionary_path)
-        self._load_ruaccent()
+        if self.enabled:
+            self._load_ruaccent()
+        else:
+            logger.info("RUAccent disabled by configuration; using accent override dictionary only")
 
     def apply(self, text: str) -> str:
         if not text or not text.strip():
@@ -73,8 +77,8 @@ class Accentor:
                 accentizer.load(omograph_model_size=self.model_size, use_dictionary=True)
             self.accentizer = accentizer
             logger.info("RUAccent loaded successfully model_size=%s", self.model_size)
-        except Exception:
-            logger.warning("RUAccent failed to load; using accent override dictionary only", exc_info=True)
+        except Exception as error:
+            logger.warning("RUAccent failed to load; using accent override dictionary only: %s", error)
             self.accentizer = None
 
     @staticmethod

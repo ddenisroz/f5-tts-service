@@ -31,10 +31,16 @@ class RuPipeline:
     accentor: Accentor
 
     @classmethod
-    def create(cls, yo_dict_path: Path, accents_dict_path: Path) -> "RuPipeline":
+    def create(
+        cls,
+        yo_dict_path: Path,
+        accents_dict_path: Path,
+        *,
+        ruaccent_enabled: bool = True,
+    ) -> "RuPipeline":
         return cls(
             yoficator=Yoficator(yo_dict_path),
-            accentor=Accentor(accents_dict_path),
+            accentor=Accentor(accents_dict_path, enabled=ruaccent_enabled),
         )
 
     @staticmethod
