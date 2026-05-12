@@ -20,7 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock README.md alembic.ini /app/
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project && \
+    uv pip install --python /opt/venv/bin/python --no-deps torchcodec
 
 COPY alembic /app/alembic
 COPY app /app/app

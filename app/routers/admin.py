@@ -196,9 +196,12 @@ async def test_voice(
         },
     }
     result = await request.app.state.provider_synthesize(provider_request)
+    if not bool(result.get("success")) or not str(result.get("audio_url") or "").strip():
+        error_message = str(result.get("error") or "Preview synthesis failed").strip()
+        raise HTTPException(status_code=503, detail=f"F5 voice preview failed: {error_message}")
     selected_voice = result.get("selected_voice") or result.get("voice") or voice_name
     return {
-        "success": bool(result.get("success")),
+        "success": True,
         "audio_url": result.get("audio_url"),
         "voice": selected_voice,
         "selected_voice": selected_voice,

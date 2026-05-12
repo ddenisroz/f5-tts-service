@@ -479,9 +479,43 @@ class PostgresVoiceStore:
     def _is_usable_voice(cls, voice: dict[str, Any]) -> bool:
         return cls._is_visible_voice(voice) and cls._has_reference_file(voice)
 
-    @staticmethod
-    def _row_to_dict(row: VoiceRow) -> dict[str, Any]:
-        return {
+    def _resolve_existing_file_path(self, voice: dict[str, Any]) -> Path | None:
+        raw_value = str(voice.get("file_path") or "").strip()
+        candidates: list[Path] = []
+        if raw_value:
+            raw_path = Path(raw_value).expanduser()
+            if raw_path.is_absolute():
+                candidates.append(raw_path.resolve())
+            else:
+                candidates.append((self.voices_dir / raw_path).resolve())
+                candidates.append((self.voices_dir / raw_path.name).resolve())
+                candidates.append(raw_path.resolve())
+
+        voice_name = str(voice.get("name") or "").strip()
+        voice_type = str(voice.get("voice_type") or "").strip().lower()
+        owner_id = voice.get("owner_id")
+        if voice_name:
+            glob_patterns: list[str] = []
+            if voice_type == "global":
+                glob_patterns.append(f"global_{voice_name}_*")
+            elif owner_id is not None:
+                glob_patterns.append(f"user_{int(owner_id)}_{voice_name}_*")
+            glob_patterns.append(f"*{voice_name}*")
+            for pattern in glob_patterns:
+                for candidate in sorted(self.voices_dir.glob(pattern)):
+                    if candidate.is_file():
+                        candidates.append(candidate.resolve())
+
+        for candidate in candidates:
+            try:
+                if candidate.is_file() and candidate.exists():
+                    return candidate.resolve()
+            except Exception:
+                continue
+        return None
+
+    def _row_to_dict(self, row: VoiceRow) -> dict[str, Any]:
+        payload = {
             "id": int(row.id),
             "name": str(row.name),
             "file_path": str(row.file_path or ""),
@@ -495,3 +529,7 @@ class PostgresVoiceStore:
             "speed_preset": row.speed_preset,
             "enabled_user_ids": [],
         }
+        resolved_path = self._resolve_existing_file_path(payload)
+        if resolved_path is not None:
+            payload["file_path"] = str(resolved_path)
+        return payload
