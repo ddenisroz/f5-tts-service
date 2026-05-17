@@ -205,6 +205,8 @@ async def upload_user_voice(
     file: UploadFile = File(...),
     voice_name: str = Form(...),
     user_id: int = Form(...),
+    reference_text: str | None = Form(default=None),
+    sample_text: str | None = Form(default=None),
 ) -> dict[str, Any]:
     try:
         clean_name = sanitize_voice_name(voice_name)
@@ -222,6 +224,7 @@ async def upload_user_voice(
         request.app,
         upload=file,
         filename_prefix=f"user_{user_id}_{clean_name}",
+        reference_text_fallback=(reference_text or sample_text or "").strip() or None,
     )
     try:
         voice = await request.app.state.voice_store.create_voice(

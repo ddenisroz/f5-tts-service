@@ -49,6 +49,8 @@ docker run --rm -p 127.0.0.1:8011:8011 \
 
 Этот smoke-путь проверяет контейнер без загрузки модели. Для production включай `F5_TTS_ENGINE_MODE=real`, постоянное хранилище, БД и реальные веса.
 
+По умолчанию real-режим закреплён на русской модели `Misha24-10/F5-TTS_RUSSIAN`: сервис сначала ищет `model_212000.safetensors` и `vocab.txt` в `models/F5-TTS_RUSSIAN`, а если их нет, докачивает `F5TTS_v1_Base_v4_winter/model_212000.safetensors` и `F5TTS_v1_Base/vocab.txt` с HuggingFace.
+
 ### Локально без Docker
 
 ```bash

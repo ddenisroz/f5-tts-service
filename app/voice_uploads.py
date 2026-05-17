@@ -69,6 +69,7 @@ async def prepare_uploaded_voice_file(
     *,
     upload: UploadFile,
     filename_prefix: str,
+    reference_text_fallback: str | None = None,
 ) -> tuple[Path, str]:
     suffix = ensure_allowed_audio_extension(upload.filename or "")
     temp_input = _create_temp_path(suffix=suffix)
@@ -109,8 +110,10 @@ async def prepare_uploaded_voice_file(
         try:
             reference_text = await transcribe_voice_file(app, target_path)
         except Exception as error:
-            logger.warning("Voice transcription failed; keeping empty reference_text: %s", error)
+            logger.warning("Voice transcription failed; using fallback reference_text if present: %s", error)
             reference_text = ""
+        if not reference_text:
+            reference_text = (reference_text_fallback or "").strip()
         return target_path, reference_text
     finally:
         await upload.close()

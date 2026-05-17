@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from app.engine import f5_engine as f5_engine_module
-from app.engine.f5_engine import F5Engine
+from app.engine.f5_engine import F5Engine, MISHA_RUSSIAN_CHECKPOINT_FILE
 
 
 class _FakeModel:
@@ -74,6 +74,18 @@ def _build_engine(tmp_path: Path, model: _FakeModel | None = None) -> F5Engine:
     engine._ready = True
     engine._model = model or _FakeModel()
     return engine
+
+
+def test_f5_engine_prefers_misha_checkpoint(workspace_tmp_path) -> None:
+    misha_checkpoint = workspace_tmp_path / MISHA_RUSSIAN_CHECKPOINT_FILE
+    fallback_checkpoint = workspace_tmp_path / "model_last_inference.safetensors"
+    misha_checkpoint.write_bytes(b"misha")
+    fallback_checkpoint.write_bytes(b"fallback")
+    (workspace_tmp_path / "vocab.txt").write_text("а\n", encoding="utf-8")
+
+    engine = _build_engine(workspace_tmp_path)
+
+    assert Path(engine._resolve_checkpoint_file()) == misha_checkpoint.resolve()
 
 
 def test_f5_engine_logs_upstream_messages_and_progress(workspace_tmp_path, caplog) -> None:

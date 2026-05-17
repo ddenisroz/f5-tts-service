@@ -30,6 +30,8 @@ async def upload_global_voice(
     request: Request,
     file: UploadFile = File(...),
     name: str | None = Form(default=None),
+    reference_text: str | None = Form(default=None),
+    sample_text: str | None = Form(default=None),
 ) -> dict[str, Any]:
     raw_name = name if name and name.strip() else file.filename or "global_voice"
     try:
@@ -48,6 +50,7 @@ async def upload_global_voice(
         request.app,
         upload=file,
         filename_prefix=f"global_{clean_name}",
+        reference_text_fallback=(reference_text or sample_text or "").strip() or None,
     )
     try:
         voice = await request.app.state.voice_store.create_voice(

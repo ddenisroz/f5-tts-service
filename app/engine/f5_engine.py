@@ -56,6 +56,11 @@ LEGACY_MIN_TAIL_SILENCE_MS = 800
 LEGACY_FADE_OUT_SEC = 0.3
 LEGACY_POST_FADE_SILENCE_SEC = 0.1
 REFERENCE_AUDIO_SAMPLE_RATE = 24000
+MISHA_RUSSIAN_REPO_ID = "Misha24-10/F5-TTS_RUSSIAN"
+MISHA_RUSSIAN_CHECKPOINT_FILE = "model_212000.safetensors"
+MISHA_RUSSIAN_CHECKPOINT_HF_PATH = f"F5TTS_v1_Base_v4_winter/{MISHA_RUSSIAN_CHECKPOINT_FILE}"
+MISHA_RUSSIAN_VOCAB_FILE = "vocab.txt"
+MISHA_RUSSIAN_VOCAB_HF_PATH = f"F5TTS_v1_Base/{MISHA_RUSSIAN_VOCAB_FILE}"
 
 
 class _LoggingProgress:
@@ -162,11 +167,17 @@ class F5Engine(BaseTtsEngine):
                 "Install upstream dependencies first."
             ) from error
 
+        self.hf_cache_dir.mkdir(parents=True, exist_ok=True)
         ckpt_file = self._resolve_checkpoint_file()
         vocab_file = self._resolve_vocab_file()
-        self.hf_cache_dir.mkdir(parents=True, exist_ok=True)
         resolved_vocoder_dir = self._ensure_local_vocoder_assets()
 
+        logger.info(
+            "Using Misha Russian F5 model repo=%s checkpoint=%s vocab=%s",
+            MISHA_RUSSIAN_REPO_ID,
+            ckpt_file,
+            vocab_file,
+        )
         logger.info("Loading F5 model model=%s ckpt=%s", self.model_name, ckpt_file)
         if resolved_vocoder_dir is not None:
             logger.info("Using local Vocos assets path=%s", resolved_vocoder_dir)
@@ -179,17 +190,13 @@ class F5Engine(BaseTtsEngine):
         logger.info("F5 model is ready")
 
     def _import_f5_api_module(self):
-        try:
-            return importlib.import_module("f5_tts.api")
-        except Exception as first_error:
-            logger.warning(
-                "F5 upstream import failed once; retrying with inference-only trainer stub: %s",
-                first_error,
-            )
-            self._install_inference_trainer_stub()
-            sys.modules.pop("f5_tts.api", None)
-            sys.modules.pop("f5_tts.model", None)
-            return importlib.import_module("f5_tts.api")
+        # The upstream package imports training helpers eagerly, but the
+        # inference service never needs them. Pre-install the stub so
+        # inference boot does not emit noisy optional-import warnings.
+        self._install_inference_trainer_stub()
+        sys.modules.pop("f5_tts.api", None)
+        sys.modules.pop("f5_tts.model", None)
+        return importlib.import_module("f5_tts.api")
 
     @staticmethod
     def _install_inference_trainer_stub() -> None:
@@ -295,6 +302,7 @@ class F5Engine(BaseTtsEngine):
                 "text_length_no_spaces": text_length,
                 "ref_audio_path": str(ref_audio),
                 "model_name": self.model_name,
+                "model_repo_id": MISHA_RUSSIAN_REPO_ID,
             },
         )
 
@@ -375,6 +383,40 @@ class F5Engine(BaseTtsEngine):
             logger.warning("Failed to bootstrap local Vocos mirror repo=%s: %s", self.vocoder_repo_id, error)
             return False
 
+    def _download_misha_asset(self, hf_filename: str, local_filename: str) -> Path | None:
+        try:
+            from huggingface_hub import hf_hub_download
+        except Exception as error:
+            logger.warning("Could not import huggingface_hub for Misha model bootstrap: %s", error)
+            return None
+
+        try:
+            self.russian_weights_dir.mkdir(parents=True, exist_ok=True)
+            downloaded_file = Path(
+                hf_hub_download(
+                    repo_id=MISHA_RUSSIAN_REPO_ID,
+                    cache_dir=str(self.hf_cache_dir),
+                    filename=hf_filename,
+                )
+            )
+            target = self.russian_weights_dir / local_filename
+            shutil.copy2(downloaded_file, target)
+            logger.info(
+                "Bootstrapped Misha Russian F5 asset repo=%s file=%s path=%s",
+                MISHA_RUSSIAN_REPO_ID,
+                hf_filename,
+                target,
+            )
+            return target.resolve()
+        except Exception as error:
+            logger.warning(
+                "Failed to bootstrap Misha Russian F5 asset repo=%s file=%s: %s",
+                MISHA_RUSSIAN_REPO_ID,
+                hf_filename,
+                error,
+            )
+            return None
+
     def _resolve_checkpoint_file(self) -> str:
         if self.checkpoint_file:
             candidate = Path(self.checkpoint_file).resolve()
@@ -383,7 +425,24 @@ class F5Engine(BaseTtsEngine):
             return str(candidate)
 
         if not self.russian_weights_dir.exists():
+            downloaded = self._download_misha_asset(
+                MISHA_RUSSIAN_CHECKPOINT_HF_PATH,
+                MISHA_RUSSIAN_CHECKPOINT_FILE,
+            )
+            if downloaded is not None:
+                return str(downloaded)
             raise RuntimeError(f"Russian weights directory not found: {self.russian_weights_dir}")
+
+        misha_checkpoint = next(self.russian_weights_dir.rglob(MISHA_RUSSIAN_CHECKPOINT_FILE), None)
+        if misha_checkpoint is not None:
+            return str(misha_checkpoint.resolve())
+
+        downloaded = self._download_misha_asset(
+            MISHA_RUSSIAN_CHECKPOINT_HF_PATH,
+            MISHA_RUSSIAN_CHECKPOINT_FILE,
+        )
+        if downloaded is not None:
+            return str(downloaded)
 
         preferred: list[Path] = []
         preferred.extend(self.russian_weights_dir.rglob("model_last_inference.safetensors"))
@@ -393,11 +452,16 @@ class F5Engine(BaseTtsEngine):
 
         if not preferred:
             raise RuntimeError(
-                "Cannot find F5 checkpoint under models/F5-TTS_RUSSIAN. "
+                f"Cannot find Misha F5 checkpoint under models/F5-TTS_RUSSIAN. Expected {MISHA_RUSSIAN_CHECKPOINT_FILE}. "
                 "Set F5_TTS_CHECKPOINT_FILE explicitly."
             )
 
         preferred.sort(key=lambda path: (len(str(path)), str(path)))
+        logger.warning(
+            "Misha checkpoint %s was not found; falling back to %s",
+            MISHA_RUSSIAN_CHECKPOINT_FILE,
+            preferred[0],
+        )
         return str(preferred[0].resolve())
 
     def _resolve_vocab_file(self) -> str:
@@ -407,13 +471,20 @@ class F5Engine(BaseTtsEngine):
                 raise RuntimeError(f"Vocab file not found: {candidate}")
             return str(candidate)
 
-        candidates = list(self.russian_weights_dir.rglob("vocab.txt"))
+        candidates = list(self.russian_weights_dir.rglob(MISHA_RUSSIAN_VOCAB_FILE))
         if not candidates:
-            vendor_vocab = self.upstream_dir / "src" / "f5_tts" / "infer" / "examples" / "vocab.txt"
+            downloaded = self._download_misha_asset(MISHA_RUSSIAN_VOCAB_HF_PATH, MISHA_RUSSIAN_VOCAB_FILE)
+            if downloaded is not None:
+                return str(downloaded)
+            vendor_vocab = self.upstream_dir / "src" / "f5_tts" / "infer" / "examples" / MISHA_RUSSIAN_VOCAB_FILE
             if vendor_vocab.exists():
+                logger.warning(
+                    "Misha vocab was not found; falling back to vendor vocab path=%s",
+                    vendor_vocab,
+                )
                 return str(vendor_vocab.resolve())
             raise RuntimeError(
-                "Cannot find vocab.txt under models/F5-TTS_RUSSIAN and vendor fallback is missing. "
+                "Cannot find Misha vocab.txt under models/F5-TTS_RUSSIAN and vendor fallback is missing. "
                 "Set F5_TTS_VOCAB_FILE explicitly."
             )
 
