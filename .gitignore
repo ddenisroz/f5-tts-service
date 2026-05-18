@@ -5,12 +5,14 @@ __pycache__/
 .pytest_cache/
 _pytest_cache/
 _pytest_tmp/
+tests/_tmp/
 pytest-cache-files-*
 .tmp/
 data/audio/*
 !data/audio/.gitkeep
 data/voices/*
 !data/voices/.gitkeep
+data/voices/*probe*.wav
 models/
 .env
 data/limits/*

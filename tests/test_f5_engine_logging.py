@@ -135,12 +135,12 @@ def test_f5_engine_restores_legacy_adaptive_speed_and_nfe(workspace_tmp_path) ->
     )
 
     assert len(model.calls) == 1
-    assert model.calls[0]["speed"] == pytest.approx(0.5)
+    assert model.calls[0]["speed"] == pytest.approx(0.9)
     assert model.calls[0]["nfe_step"] == 26
     assert result.meta["detected_language"] == "russian"
     assert result.meta["text_length_no_spaces"] == 2
     assert result.meta["nfe_step"] == 26
-    assert result.meta["speed_factor"] == pytest.approx(0.5)
+    assert result.meta["speed_factor"] == pytest.approx(0.9)
     assert result.duration_sec > 0.95
 
 
@@ -162,11 +162,11 @@ def test_f5_engine_uses_long_text_legacy_heuristics(workspace_tmp_path) -> None:
     )
 
     assert len(model.calls) == 1
-    assert model.calls[0]["speed"] == pytest.approx(1.5)
+    assert model.calls[0]["speed"] == pytest.approx(1.42)
     assert model.calls[0]["nfe_step"] == 18
     assert result.meta["text_length_no_spaces"] == 130
     assert result.meta["nfe_step"] == 18
-    assert result.meta["speed_factor"] == pytest.approx(1.5)
+    assert result.meta["speed_factor"] == pytest.approx(1.42)
 
 
 def test_f5_engine_retries_cuda_failure_with_legacy_fallback(workspace_tmp_path, caplog) -> None:
@@ -189,7 +189,7 @@ def test_f5_engine_retries_cuda_failure_with_legacy_fallback(workspace_tmp_path,
     )
 
     assert len(model.calls) == 2
-    assert model.calls[0]["speed"] == pytest.approx(0.5)
+    assert model.calls[0]["speed"] == pytest.approx(0.9)
     assert model.calls[0]["nfe_step"] == 26
     assert model.calls[1]["speed"] == pytest.approx(1.0)
     assert model.calls[1]["nfe_step"] == 16

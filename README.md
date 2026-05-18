@@ -58,6 +58,17 @@ uv sync --python 3.12
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8011
 ```
 
+## Уборка рабочей копии
+
+Для безопасной локальной уборки есть dry-run скрипт:
+
+```powershell
+.\scripts\cleanup_worktree.ps1
+.\scripts\cleanup_worktree.ps1 -Apply
+```
+
+Скрипт чистит `__pycache__`, pytest/cache-директории, generated audio в `data/audio`, временные state-файлы и probe WAV. Он не удаляет `.env`, `.venv`, `models/`, постоянный `data/voices/state.json` и пользовательские voice/reference WAV.
+
 ## Health endpoints
 
 - `GET /health/live`
