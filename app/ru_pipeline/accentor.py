@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from types import MethodType
 from pathlib import Path
 from typing import Any
 
@@ -75,11 +76,62 @@ class Accentor:
         try:
             if hasattr(accentizer, "load"):
                 accentizer.load(omograph_model_size=self.model_size, use_dictionary=True)
+            self._patch_ruaccent_onnx_inputs(accentizer)
             self.accentizer = accentizer
             logger.info("RUAccent loaded successfully model_size=%s", self.model_size)
         except Exception as error:
             logger.warning("RUAccent failed to load; using accent override dictionary only: %s", error)
             self.accentizer = None
+
+    @staticmethod
+    def _patch_ruaccent_onnx_inputs(accentizer: Any) -> None:
+        """Adapt RUAccent accent ONNX feed to models that require token_type_ids."""
+        accent_model = getattr(accentizer, "accent_model", None)
+        session = getattr(accent_model, "session", None)
+        tokenizer = getattr(accent_model, "tokenizer", None)
+        if accent_model is None or session is None or tokenizer is None:
+            return
+        if getattr(accent_model, "_paidviewer_token_type_ids_patch", False):
+            return
+
+        input_names = {input_info.name for input_info in session.get_inputs()}
+        if "token_type_ids" not in input_names:
+            return
+
+        try:
+            from ruaccent import accent_model as ruaccent_accent_model
+        except Exception as error:
+            logger.warning("RUAccent token_type_ids patch skipped: %s", error)
+            return
+
+        np = ruaccent_accent_model.np
+        softmax = ruaccent_accent_model.softmax
+
+        def patched_put_accent(model_self: Any, word: str) -> str:
+            lower_word = word.lower()
+            inputs = model_self.tokenizer(lower_word, return_tensors="np")
+            inputs = {key: value.astype(np.int64) for key, value in inputs.items()}
+            input_ids = inputs.get("input_ids")
+            if "token_type_ids" in input_names and "token_type_ids" not in inputs and input_ids is not None:
+                inputs["token_type_ids"] = np.zeros_like(input_ids, dtype=np.int64)
+            filtered_inputs = {key: value for key, value in inputs.items() if key in input_names}
+
+            outputs = model_self.session.run(None, filtered_inputs)
+            output_names = {output_key.name: idx for idx, output_key in enumerate(model_self.session.get_outputs())}
+            logits = outputs[output_names["logits"]]
+            probabilities = softmax(logits)
+            scores = np.max(probabilities, axis=-1)[0]
+            labels = np.argmax(logits, axis=-1)[0]
+            pred_with_scores = [
+                {"label": model_self.id2label[str(label)], "score": float(score)}
+                for label, score in zip(labels, scores)
+            ]
+
+            return model_self.render_stress(word, pred_with_scores)
+
+        accent_model.put_accent = MethodType(patched_put_accent, accent_model)
+        accent_model._paidviewer_token_type_ids_patch = True
+        logger.info("RUAccent ONNX token_type_ids compatibility patch enabled")
 
     @staticmethod
     def _build_ruaccent():

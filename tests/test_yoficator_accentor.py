@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
+
 from app.ru_pipeline.accentor import Accentor
 from app.ru_pipeline.yoficator import Yoficator
 
@@ -20,6 +22,47 @@ class _BrokenRuAccent:
 
     def process_all(self, text: str) -> str:
         raise RuntimeError("boom")
+
+
+class _FakeOnnxInput:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeOnnxSession:
+    def __init__(self) -> None:
+        self.input_feed = None
+
+    def get_inputs(self):
+        return [_FakeOnnxInput("input_ids"), _FakeOnnxInput("attention_mask"), _FakeOnnxInput("token_type_ids")]
+
+    def get_outputs(self):
+        return [_FakeOnnxInput("logits")]
+
+    def run(self, _output_names, input_feed):
+        self.input_feed = input_feed
+        return [np.array([[[0.1, 0.9], [0.9, 0.1]]], dtype=np.float32)]
+
+
+class _FakeTokenTypeAccentModel:
+    def __init__(self) -> None:
+        self.session = _FakeOnnxSession()
+        self.id2label = {"0": "NO", "1": "STRESS"}
+
+    def tokenizer(self, _word: str, return_tensors: str):
+        assert return_tensors == "np"
+        return {
+            "input_ids": np.array([[1, 2]], dtype=np.int64),
+            "attention_mask": np.array([[1, 1]], dtype=np.int64),
+        }
+
+    def render_stress(self, word: str, _pred):
+        return word
+
+
+class _FakeTokenTypeRuAccent:
+    def __init__(self) -> None:
+        self.accent_model = _FakeTokenTypeAccentModel()
 
 
 def test_yoficator_supports_dat_dictionary(workspace_tmp_path) -> None:
@@ -80,3 +123,15 @@ def test_accentor_degrades_cleanly_when_ruaccent_apply_fails(workspace_tmp_path,
     accentor = Accentor(dictionary_path)
 
     assert accentor.apply("привет мир") == "приве́т мир"
+
+
+def test_accentor_adds_token_type_ids_for_ruaccent_onnx_model() -> None:
+    accentizer = _FakeTokenTypeRuAccent()
+
+    Accentor._patch_ruaccent_onnx_inputs(accentizer)
+    assert accentizer.accent_model.put_accent("слово") == "слово"
+
+    input_feed = accentizer.accent_model.session.input_feed
+    assert input_feed is not None
+    assert set(input_feed) == {"input_ids", "attention_mask", "token_type_ids"}
+    assert np.array_equal(input_feed["token_type_ids"], np.zeros_like(input_feed["input_ids"]))
