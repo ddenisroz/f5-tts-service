@@ -27,8 +27,11 @@ class _DummyVoiceStore:
             "cfg_strength": 2.5,
             "speed_preset": "fast",
         }
+        self.raise_unavailable = False
 
     async def resolve_voice_record_for_user(self, user_id, requested_voice):
+        if self.raise_unavailable and requested_voice:
+            raise ValueError(f"Voice '{requested_voice}' is not available")
         return dict(self._voice)
 
 
@@ -161,3 +164,32 @@ def test_compat_route_keeps_response_shape_and_emits_request_logs(workspace_tmp_
     messages = [record.getMessage() for record in caplog.records]
     assert any('request_id="req-compat-1"' in message and "Accepted synthesis request" in message for message in messages)
     assert any('request_id="req-compat-1"' in message and "Synthesis completed" in message for message in messages)
+
+
+def test_compat_route_returns_explicit_error_for_unavailable_voice(workspace_tmp_path) -> None:
+    app, engine, limits_store = _build_app(workspace_tmp_path, compat=True)
+    app.state.voice_store.raise_unavailable = True
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/tts/synthesize-channel",
+        headers={"Authorization": "Bearer ignored"},
+        json={
+            "channel_name": "compat-demo",
+            "text": "Привет мир",
+            "author": "tester",
+            "user_id": 42,
+            "voice": "ghost_voice",
+            "tts_settings": {},
+            "word_filter": [],
+            "blocked_users": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["selected_voice"] == "ghost_voice"
+    assert payload["error"] == "Voice 'ghost_voice' is not available"
+    assert engine.calls == []
+    assert limits_store.logged == []

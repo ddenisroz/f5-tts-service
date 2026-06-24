@@ -48,9 +48,9 @@ class FileVoiceStore:
     async def list_global_voices(self) -> list[dict[str, Any]]:
         state = self._read_state()
         return [
-            v
+            self._decorate_voice(v)
             for v in state["voices"]
-            if v.get("voice_type") == "global" and self._is_visible_voice(v)
+            if v.get("voice_type") == "global" and self._is_usable_voice(v)
         ]
 
     async def list_available_voices(self, user_id: int | None) -> list[dict[str, Any]]:
@@ -59,25 +59,25 @@ class FileVoiceStore:
     async def list_user_voices(self, user_id: int) -> list[dict[str, Any]]:
         state = self._read_state()
         return [
-            v
+            self._decorate_voice(v)
             for v in state["voices"]
-            if int(v.get("owner_id") or 0) == user_id and self._is_visible_voice(v)
+            if int(v.get("owner_id") or 0) == user_id and self._is_usable_voice(v)
         ]
 
     async def list_all_voices(self) -> list[dict[str, Any]]:
-        return self._read_state()["voices"]
+        return [self._decorate_voice(voice) for voice in self._read_state()["voices"]]
 
     async def get_voice_by_id(self, voice_id: int) -> dict[str, Any] | None:
         for voice in self._read_state()["voices"]:
             if int(voice["id"]) == voice_id:
-                return voice
+                return self._decorate_voice(voice)
         return None
 
     async def get_voice_by_name(self, name: str) -> dict[str, Any] | None:
         normalized = name.strip().lower()
         for voice in self._read_state()["voices"]:
             if str(voice.get("name", "")).strip().lower() == normalized:
-                return voice
+                return self._decorate_voice(voice)
         return None
 
     async def create_voice(
@@ -179,6 +179,8 @@ class FileVoiceStore:
             state["voices"] = [voice for voice in state["voices"] if int(voice["id"]) != voice_id]
             if len(state["voices"]) == before:
                 return False
+            for user_key, values in state.get("enabled", {}).items():
+                state["enabled"][user_key] = [int(value) for value in values if int(value) != voice_id]
             state["updated_at"] = _utc_now_iso()
             self._write_state(state)
             return True
@@ -187,12 +189,21 @@ class FileVoiceStore:
         state = self._read_state()
         enabled_map = state.get("enabled", {})
         values = enabled_map.get(str(user_id), [])
-        return [int(v) for v in values]
+        usable_ids = {
+            int(voice["id"])
+            for voice in state["voices"]
+            if self._is_usable_voice(voice)
+        }
+        return [int(value) for value in values if int(value) in usable_ids]
 
     async def set_enabled_voice_ids(self, user_id: int, voice_ids: list[int]) -> list[int]:
         async with self._lock:
             state = self._read_state()
-            valid_ids = {int(v["id"]) for v in state["voices"]}
+            valid_ids = {
+                int(voice["id"])
+                for voice in state["voices"]
+                if self._is_usable_voice(voice)
+            }
             filtered = sorted({int(v) for v in voice_ids if int(v) in valid_ids})
             state.setdefault("enabled", {})[str(user_id)] = filtered
             state["updated_at"] = _utc_now_iso()
@@ -201,7 +212,11 @@ class FileVoiceStore:
 
     async def toggle_enabled_voice_id(self, user_id: int, voice_id: int, is_enabled: bool) -> list[int]:
         current = set(await self.get_enabled_voice_ids(user_id))
-        valid_ids = {int(voice["id"]) for voice in self._read_state()["voices"]}
+        valid_ids = {
+            int(voice["id"])
+            for voice in self._read_state()["voices"]
+            if self._is_usable_voice(voice)
+        }
         if voice_id not in valid_ids:
             return sorted(current)
         if is_enabled:
@@ -238,12 +253,13 @@ class FileVoiceStore:
         if requested and normalized_requested not in DEFAULT_VOICE_ALIASES:
             matched = self._find_by_name(usable_pool, requested)
             if matched:
-                return matched
+                return self._decorate_voice(matched)
+            raise ValueError(f"Voice '{requested}' is not available")
 
         default_voice = self._find_by_name(usable_pool, DEFAULT_VOICE_NAME)
         if default_voice:
-            return default_voice
-        return usable_pool[0]
+            return self._decorate_voice(default_voice)
+        return self._decorate_voice(usable_pool[0])
 
     async def stats(self) -> VoiceStats:
         state = self._read_state()
@@ -294,7 +310,7 @@ class FileVoiceStore:
 
     def _active_voices_for_user(self, user_id: int | None) -> list[dict[str, Any]]:
         voices = self._read_state()["voices"]
-        active = [voice for voice in voices if self._is_visible_voice(voice)]
+        active = [self._decorate_voice(voice) for voice in voices if self._is_usable_voice(voice)]
         if user_id is None:
             return [voice for voice in active if voice.get("voice_type") == "global"]
         user_specific = []
@@ -342,6 +358,12 @@ class FileVoiceStore:
     @classmethod
     def _is_usable_voice(cls, voice: dict[str, Any]) -> bool:
         return cls._is_visible_voice(voice) and cls._has_reference_file(voice)
+
+    def _decorate_voice(self, voice: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(voice)
+        payload["has_reference_file"] = self._has_reference_file(payload)
+        payload["is_usable"] = self._is_usable_voice(payload)
+        return payload
 
     @staticmethod
     def _find_by_name(voices: list[dict[str, Any]], name: str) -> dict[str, Any] | None:

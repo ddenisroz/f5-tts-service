@@ -22,6 +22,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .schemas import VoiceStats
@@ -116,7 +117,7 @@ class PostgresVoiceStore:
                 .order_by(VoiceRow.id.asc())
             )
             rows = (await session.scalars(stmt)).all()
-            return [payload for row in rows if (payload := self._row_to_dict(row)) and self._is_visible_voice(payload)]
+            return [payload for row in rows if (payload := self._row_to_dict(row)) and self._is_usable_voice(payload)]
 
     async def list_available_voices(self, user_id: int | None) -> list[dict[str, Any]]:
         return await self._active_voices_for_user(user_id)
@@ -135,7 +136,7 @@ class PostgresVoiceStore:
                 .order_by(VoiceRow.id.asc())
             )
             rows = (await session.scalars(stmt)).all()
-            return [payload for row in rows if (payload := self._row_to_dict(row)) and self._is_visible_voice(payload)]
+            return [payload for row in rows if (payload := self._row_to_dict(row)) and self._is_usable_voice(payload)]
 
     async def list_all_voices(self) -> list[dict[str, Any]]:
         async with self.session_factory() as session:
@@ -176,42 +177,45 @@ class PostgresVoiceStore:
         normalized_name = name.strip().lower()
         normalized_type = (voice_type or "user").strip().lower()
         owner = int(owner_id) if owner_id is not None else None
-        async with self.session_factory() as session:
-            async with session.begin():
-                if normalized_type == "global":
-                    dup_stmt = select(VoiceRow.id).where(func.lower(VoiceRow.name) == normalized_name)
-                else:
-                    dup_stmt = select(VoiceRow.id).where(
-                        and_(
-                            func.lower(VoiceRow.name) == normalized_name,
-                            or_(
-                                VoiceRow.voice_type == "global",
-                                and_(
-                                    VoiceRow.voice_type != "global",
-                                    VoiceRow.owner_id == owner,
+        try:
+            async with self.session_factory() as session:
+                async with session.begin():
+                    if normalized_type == "global":
+                        dup_stmt = select(VoiceRow.id).where(func.lower(VoiceRow.name) == normalized_name)
+                    else:
+                        dup_stmt = select(VoiceRow.id).where(
+                            and_(
+                                func.lower(VoiceRow.name) == normalized_name,
+                                or_(
+                                    VoiceRow.voice_type == "global",
+                                    and_(
+                                        VoiceRow.voice_type != "global",
+                                        VoiceRow.owner_id == owner,
+                                    ),
                                 ),
-                            ),
+                            )
                         )
-                    )
-                duplicate = await session.scalar(dup_stmt)
-                if duplicate is not None:
-                    raise ValueError(f"Voice '{name}' already exists")
+                    duplicate = await session.scalar(dup_stmt)
+                    if duplicate is not None:
+                        raise ValueError(f"Voice '{name}' already exists")
 
-                row = VoiceRow(
-                    name=name,
-                    file_path=file_path,
-                    voice_type=normalized_type,
-                    owner_id=owner,
-                    is_public=bool(is_public),
-                    is_active=True,
-                    reference_text=reference_text,
-                    cfg_strength=cfg_strength,
-                    speed_preset=speed_preset,
-                )
-                session.add(row)
-                await session.flush()
-                await session.refresh(row)
-                return self._row_to_dict(row)
+                    row = VoiceRow(
+                        name=name,
+                        file_path=file_path,
+                        voice_type=normalized_type,
+                        owner_id=owner,
+                        is_public=bool(is_public),
+                        is_active=True,
+                        reference_text=reference_text,
+                        cfg_strength=cfg_strength,
+                        speed_preset=speed_preset,
+                    )
+                    session.add(row)
+                    await session.flush()
+                    await session.refresh(row)
+                    return self._row_to_dict(row)
+        except IntegrityError as error:
+            raise ValueError(f"Voice '{name}' already exists") from error
 
     async def update_voice_settings(self, voice_id: int, patch: dict[str, Any]) -> dict[str, Any] | None:
         async with self.session_factory() as session:
@@ -276,14 +280,15 @@ class PostgresVoiceStore:
     async def delete_voice(self, voice_id: int) -> bool:
         async with self.session_factory() as session:
             async with session.begin():
+                await session.execute(delete(UserVoiceEnabledRow).where(UserVoiceEnabledRow.voice_id == int(voice_id)))
                 result = await session.execute(delete(VoiceRow).where(VoiceRow.id == int(voice_id)))
                 return bool((result.rowcount or 0) > 0)
 
     async def get_enabled_voice_ids(self, user_id: int) -> list[int]:
         async with self.session_factory() as session:
             stmt = (
-                select(UserVoiceEnabledRow.voice_id)
-                .join(VoiceRow, VoiceRow.id == UserVoiceEnabledRow.voice_id)
+                select(VoiceRow)
+                .join(UserVoiceEnabledRow, UserVoiceEnabledRow.voice_id == VoiceRow.id)
                 .where(
                     and_(
                         UserVoiceEnabledRow.user_id == int(user_id),
@@ -294,12 +299,21 @@ class PostgresVoiceStore:
                 .order_by(UserVoiceEnabledRow.voice_id.asc())
             )
             rows = (await session.scalars(stmt)).all()
-            return [int(item) for item in rows]
+            return [
+                int(payload["id"])
+                for row in rows
+                if (payload := self._row_to_dict(row)) and self._is_usable_voice(payload)
+            ]
 
     async def set_enabled_voice_ids(self, user_id: int, voice_ids: list[int]) -> list[int]:
         async with self.session_factory() as session:
             async with session.begin():
-                valid_ids = set((await session.scalars(select(VoiceRow.id))).all())
+                rows = (await session.scalars(select(VoiceRow))).all()
+                valid_ids = {
+                    int(payload["id"])
+                    for row in rows
+                    if (payload := self._row_to_dict(row)) and self._is_usable_voice(payload)
+                }
                 filtered = sorted({int(item) for item in voice_ids if int(item) in valid_ids})
                 await session.execute(delete(UserVoiceEnabledRow).where(UserVoiceEnabledRow.user_id == int(user_id)))
                 for voice_id in filtered:
@@ -311,9 +325,10 @@ class PostgresVoiceStore:
         voice = int(voice_id)
         async with self.session_factory() as session:
             async with session.begin():
-                exists_stmt = select(VoiceRow.id).where(VoiceRow.id == voice)
+                exists_stmt = select(VoiceRow).where(VoiceRow.id == voice)
                 exists = await session.scalar(exists_stmt)
-                if exists is None:
+                exists_payload = self._row_to_dict(exists) if exists else None
+                if not exists_payload or not self._is_usable_voice(exists_payload):
                     return await self.get_enabled_voice_ids(user)
 
                 if is_enabled:
@@ -367,6 +382,7 @@ class PostgresVoiceStore:
             matched = self._find_by_name(usable_pool, requested)
             if matched:
                 return matched
+            raise ValueError(f"Voice '{requested}' is not available")
 
         default_voice = self._find_by_name(usable_pool, DEFAULT_VOICE_NAME)
         if default_voice:
@@ -431,7 +447,7 @@ class PostgresVoiceStore:
                     .order_by(VoiceRow.id.asc())
                 )
             rows = (await session.scalars(stmt)).all()
-            return [payload for row in rows if (payload := self._row_to_dict(row)) and self._is_visible_voice(payload)]
+            return [payload for row in rows if (payload := self._row_to_dict(row)) and self._is_usable_voice(payload)]
 
     async def _filter_by_enabled(self, user_id: int | None, voices: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if user_id is None:
@@ -532,4 +548,6 @@ class PostgresVoiceStore:
         resolved_path = self._resolve_existing_file_path(payload)
         if resolved_path is not None:
             payload["file_path"] = str(resolved_path)
+        payload["has_reference_file"] = resolved_path is not None
+        payload["is_usable"] = self._is_usable_voice(payload)
         return payload

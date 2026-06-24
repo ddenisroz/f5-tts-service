@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import uuid
+import os
 from pathlib import Path
 from typing import Any
 
@@ -63,7 +64,18 @@ async def synthesize_channel(request: Request, payload: CompatSynthesizeChannelR
         }
 
     preferred_voice = payload.voice or payload.tts_settings.get("voice")
-    voice_record = await request.app.state.voice_store.resolve_voice_record_for_user(payload.user_id, preferred_voice)
+    try:
+        voice_record = await request.app.state.voice_store.resolve_voice_record_for_user(payload.user_id, preferred_voice)
+    except ValueError as error:
+        return {
+            "success": False,
+            "audio_url": None,
+            "voice": preferred_voice or "default_voice",
+            "selected_voice": preferred_voice or "default_voice",
+            "tts_type": "ai_f5",
+            "duration": None,
+            "error": str(error),
+        }
     if voice_record is None:
         return {
             "success": False,
@@ -218,9 +230,9 @@ async def upload_user_voice(
         and str(item.get("name", "")).strip().lower() == clean_name.lower()
         for item in all_voices
     ):
-        raise HTTPException(status_code=400, detail=f"Voice with name '{clean_name}' already exists")
+        raise HTTPException(status_code=409, detail=f"Voice with name '{clean_name}' already exists")
 
-    target_path, reference_text = await prepare_uploaded_voice_file(
+    staged_path, target_path, reference_text = await prepare_uploaded_voice_file(
         request.app,
         upload=file,
         filename_prefix=f"user_{user_id}_{clean_name}",
@@ -237,10 +249,16 @@ async def upload_user_voice(
             cfg_strength=float(request.app.state.settings.f5_default_cfg_strength),
             speed_preset=str(request.app.state.settings.f5_default_speed_preset),
         )
+        os.replace(staged_path, target_path)
+        voice = await request.app.state.voice_store.get_voice_by_id(int(voice["id"]))
     except ValueError as error:
+        staged_path.unlink(missing_ok=True)
         target_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail=str(error))
+        raise HTTPException(status_code=409 if "already exists" in str(error).lower() else 400, detail=str(error))
     except Exception:
+        if "voice" in locals() and voice and voice.get("id"):
+            await request.app.state.voice_store.delete_voice(int(voice["id"]))
+        staged_path.unlink(missing_ok=True)
         target_path.unlink(missing_ok=True)
         raise
     return {"success": True, "status": "success", "voice": voice}

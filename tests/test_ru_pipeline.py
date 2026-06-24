@@ -58,6 +58,25 @@ def test_ru_pipeline_keeps_english_text_and_adds_final_punctuation(workspace_tmp
     assert output == "hello world."
 
 
+def test_ru_pipeline_applies_to_mixed_cyrillic_url_and_emote(workspace_tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(Accentor, "_build_ruaccent", staticmethod(lambda: _NoopRuAccent()))
+    yo_path = workspace_tmp_path / "yo-mixed.json"
+    yo_path.write_text(
+        json.dumps({"\u0435\u0449\u0435": "\u0435\u0449\u0451"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    accents_path = workspace_tmp_path / "accents-mixed.json"
+    accents_path.write_text("{}", encoding="utf-8")
+    pipeline = RuPipeline.create(yo_path, accents_path)
+
+    output = pipeline.process("HYPE https://example.test/watch @viewer \u0435\u0449\u0435")
+
+    assert "\u0435\u0449\u0451" in output
+    assert "HYPE" in output
+    assert "https://example.test/watch" in output
+    assert output.endswith(".")
+
+
 def test_ru_pipeline_drops_empty_or_symbol_only_input(workspace_tmp_path, monkeypatch) -> None:
     pipeline = _build_pipeline(workspace_tmp_path, monkeypatch)
 

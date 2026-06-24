@@ -70,7 +70,7 @@ async def prepare_uploaded_voice_file(
     upload: UploadFile,
     filename_prefix: str,
     reference_text_fallback: str | None = None,
-) -> tuple[Path, str]:
+) -> tuple[Path, Path, str]:
     suffix = ensure_allowed_audio_extension(upload.filename or "")
     temp_input = _create_temp_path(suffix=suffix)
     temp_wav = _create_temp_path(suffix=".wav")
@@ -105,16 +105,17 @@ async def prepare_uploaded_voice_file(
         safe_prefix = _safe_filename_part(filename_prefix)
         target_name = f"{safe_prefix}_{uuid.uuid4().hex}.wav"
         target_path = app.state.voice_files_dir / target_name
-        await asyncio.to_thread(shutil.copy2, temp_wav, target_path)
+        staged_path = app.state.voice_files_dir / f".{target_name}.tmp"
+        await asyncio.to_thread(shutil.copy2, temp_wav, staged_path)
 
         try:
-            reference_text = await transcribe_voice_file(app, target_path)
+            reference_text = await transcribe_voice_file(app, staged_path)
         except Exception as error:
             logger.warning("Voice transcription failed; using fallback reference_text if present: %s", error)
             reference_text = ""
         if not reference_text:
             reference_text = (reference_text_fallback or "").strip()
-        return target_path, reference_text
+        return staged_path, target_path, reference_text
     finally:
         await upload.close()
         await _cleanup_temp_path(temp_input)

@@ -15,7 +15,10 @@ from .yoficator import Yoficator
 
 LONG_SEQ_RE = re.compile(r"(.)\1{3,}", flags=re.UNICODE)
 SPACE_RE = re.compile(r"\s+", flags=re.UNICODE)
-CYRILLIC_RE = re.compile(r"[а-яё]", flags=re.IGNORECASE)
+URL_RE = re.compile(r"https?://\S+|www\.\S+", flags=re.IGNORECASE)
+MENTION_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_][A-Za-z0-9_.-]*", flags=re.UNICODE)
+EMOTE_TOKEN_RE = re.compile(r"(?<!\w):[A-Za-z0-9_]{2,32}:(?!\w)|(?<!\w)[A-Z][A-Z0-9_]{1,31}(?!\w)", flags=re.UNICODE)
+CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]", flags=re.IGNORECASE)
 LATIN_RE = re.compile(r"[a-z]", flags=re.IGNORECASE)
 
 logger = logging.getLogger(__name__)
@@ -54,15 +57,24 @@ class RuPipeline:
         return SPACE_RE.sub(" ", text).strip()
 
     @staticmethod
-    def detect_language(text: str) -> str:
-        cyrillic_count = len(CYRILLIC_RE.findall(text or ""))
-        latin_count = len(LATIN_RE.findall(text or ""))
-        if cyrillic_count > latin_count:
-            return "russian"
-        if latin_count > cyrillic_count:
-            return "english"
+    def _language_sample(text: str) -> str:
+        cleaned = URL_RE.sub(" ", text or "")
+        cleaned = MENTION_RE.sub(" ", cleaned)
+        cleaned = EMOTE_TOKEN_RE.sub(" ", cleaned)
+        return SPACE_RE.sub(" ", cleaned).strip()
+
+    @classmethod
+    def language_counts(cls, text: str) -> tuple[int, int]:
+        sample = cls._language_sample(text)
+        return len(CYRILLIC_RE.findall(sample)), len(LATIN_RE.findall(sample))
+
+    @classmethod
+    def detect_language(cls, text: str) -> str:
+        cyrillic_count, latin_count = cls.language_counts(text)
         if cyrillic_count > 0:
             return "russian"
+        if latin_count > 0:
+            return "english"
         return "russian"
 
     def process(self, text: str, logger: StageLogger | None = None) -> str:
@@ -71,10 +83,20 @@ class RuPipeline:
             if logger is not None:
                 logger.info("RU preprocessing produced empty text after preclean")
             return ""
+
         pipeline_logger = logger or globals()["logger"]
-        language = self.detect_language(text)
-        pipeline_logger.info("RU preprocessing language=%s", language)
-        if language == "russian":
+        cyrillic_count, latin_count = self.language_counts(text)
+        language = "russian" if cyrillic_count > 0 else ("english" if latin_count > 0 else "russian")
+        ru_pipeline_applied = cyrillic_count > 0 or language == "russian"
+        pipeline_logger.info(
+            "RU preprocessing decision language=%s cyrillic_count=%s latin_count=%s ru_pipeline_applied=%s",
+            language,
+            cyrillic_count,
+            latin_count,
+            ru_pipeline_applied,
+        )
+
+        if ru_pipeline_applied:
             text = self._apply_stage("yo", text, self.yoficator.apply, pipeline_logger)
             text = self._apply_stage("date_normalization", text, convert_all_dates_in_text, pipeline_logger)
             text = self._apply_stage("time_normalization", text, convert_all_time_in_text, pipeline_logger)
@@ -83,6 +105,7 @@ class RuPipeline:
             text = self._apply_stage("accenting", text, self.accentor.apply, pipeline_logger)
         else:
             pipeline_logger.info("Skipping RU-only preprocessing for language=%s", language)
+
         text = SPACE_RE.sub(" ", text).strip()
         if text and text[-1] not in ".!?":
             text = f"{text}."

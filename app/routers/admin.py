@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -44,9 +45,9 @@ async def upload_global_voice(
         and str(item.get("name", "")).strip().lower() == clean_name.lower()
         for item in all_voices
     ):
-        raise HTTPException(status_code=400, detail=f"Voice with name '{clean_name}' already exists")
+        raise HTTPException(status_code=409, detail=f"Voice with name '{clean_name}' already exists")
 
-    target_path, reference_text = await prepare_uploaded_voice_file(
+    staged_path, target_path, reference_text = await prepare_uploaded_voice_file(
         request.app,
         upload=file,
         filename_prefix=f"global_{clean_name}",
@@ -63,10 +64,16 @@ async def upload_global_voice(
             cfg_strength=float(request.app.state.settings.f5_default_cfg_strength),
             speed_preset=str(request.app.state.settings.f5_default_speed_preset),
         )
+        os.replace(staged_path, target_path)
+        voice = await request.app.state.voice_store.get_voice_by_name(clean_name)
     except ValueError as error:
+        staged_path.unlink(missing_ok=True)
         target_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail=str(error))
+        raise HTTPException(status_code=409 if "already exists" in str(error).lower() else 400, detail=str(error))
     except Exception:
+        if "voice" in locals() and voice and voice.get("id"):
+            await request.app.state.voice_store.delete_voice(int(voice["id"]))
+        staged_path.unlink(missing_ok=True)
         target_path.unlink(missing_ok=True)
         raise
     return {"success": True, "status": "success", "voice": voice}
