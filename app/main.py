@@ -65,7 +65,43 @@ def _make_provider_synthesize_fn(app: FastAPI):
                 payload.get("volume_level"),
                 bool(metadata.get("compat")),
             )
-            text_ru = app.state.ru_pipeline.process(str(payload.get("text") or ""), logger=request_logger)
+            raw_text = str(payload.get("text") or "")
+            detected_language = app.state.ru_pipeline.detect_language(raw_text)
+            alt_engine = getattr(app.state, "alt_engine", None)
+            selected_engine = app.state.engine
+            route_target = "primary"
+            if detected_language in {"mixed", "english"} and alt_engine is not None:
+                selected_engine = alt_engine
+                route_target = "alt"
+            elif detected_language in {"mixed", "english"}:
+                request_logger.warning(
+                    "Language-aware routing fallback detected_language=%s alt_engine_configured=false; using primary model",
+                    detected_language,
+                )
+
+            request_logger.info(
+                "Language-aware routing detected_language=%s route_target=%s primary_model=%s alt_model_available=%s",
+                detected_language,
+                route_target,
+                getattr(app.state.engine, "model_label", "primary"),
+                bool(alt_engine is not None),
+            )
+            pipeline_state = (
+                app.state.ru_pipeline.describe_state()
+                if hasattr(app.state.ru_pipeline, "describe_state")
+                else {}
+            )
+            if pipeline_state:
+                request_logger.info(
+                    "RU pipeline state yo_entries=%s ruaccent_enabled=%s ruaccent_loaded=%s ruaccent_model_size=%s accent_override_entries=%s",
+                    pipeline_state.get("yo_entries"),
+                    pipeline_state.get("ruaccent_enabled"),
+                    pipeline_state.get("ruaccent_loaded"),
+                    pipeline_state.get("ruaccent_model_size"),
+                    pipeline_state.get("accent_override_entries"),
+                )
+
+            text_ru = app.state.ru_pipeline.process(raw_text, logger=request_logger)
             if not text_ru:
                 raise ValueError("Text is empty after RU preprocessing")
             synth_context = await resolve_synthesis_context(app, payload)
@@ -82,12 +118,14 @@ def _make_provider_synthesize_fn(app: FastAPI):
             else:
                 remove_silence = _as_bool(metadata.get("remove_silence"))
             request_logger.info(
-                "Starting synthesis remove_silence=%s cfg_strength=%s speed_preset=%s",
+                "Starting synthesis remove_silence=%s cfg_strength=%s speed_preset=%s engine_label=%s route_target=%s",
                 remove_silence,
                 synth_context["cfg_strength"],
                 synth_context["speed_preset"],
+                getattr(selected_engine, "model_label", "primary"),
+                route_target,
             )
-            result = await app.state.engine.synthesize(
+            result = await selected_engine.synthesize(
                 text=text_ru,
                 voice=synth_context["selected_voice"],
                 ref_audio_path=synth_context["reference_audio_path"],
@@ -161,6 +199,8 @@ async def lifespan(app: FastAPI):
             model_name=settings.model_name,
             checkpoint_file=settings.checkpoint_file,
             vocab_file=settings.vocab_file,
+            model_label="Misha Russian F5",
+            model_repo_id="Misha24-10/F5-TTS_RUSSIAN",
             hf_cache_dir=settings.hf_cache_path,
             vocoder_local_dir=settings.vocoder_local_path,
             vocoder_repo_id=settings.vocoder_repo_id,
@@ -174,6 +214,34 @@ async def lifespan(app: FastAPI):
             default_cfg_strength=settings.f5_default_cfg_strength,
             default_speed_preset=settings.f5_default_speed_preset,
         )
+        alt_engine = None
+        if settings.alt_checkpoint_file.strip() and settings.alt_vocab_file.strip():
+            alt_engine = F5Engine(
+                mode=settings.engine_mode,
+                upstream_dir=settings.upstream_path,
+                russian_weights_dir=settings.russian_weights_path,
+                model_name=settings.alt_model_name,
+                checkpoint_file=settings.alt_checkpoint_file,
+                vocab_file=settings.alt_vocab_file,
+                model_label=settings.alt_model_label,
+                model_repo_id=settings.alt_model_repo_id or "custom",
+                hf_cache_dir=settings.hf_cache_path,
+                vocoder_local_dir=settings.vocoder_local_path,
+                vocoder_repo_id=settings.vocoder_repo_id,
+                device=settings.device,
+                ode_method=settings.ode_method,
+                use_ema=settings.use_ema,
+                target_rms=settings.target_rms,
+                cross_fade_duration=settings.cross_fade_duration,
+                nfe_step=settings.nfe_step,
+                sway_sampling_coef=settings.sway_sampling_coef,
+                default_cfg_strength=settings.f5_default_cfg_strength,
+                default_speed_preset=settings.f5_default_speed_preset,
+            )
+        elif settings.alt_checkpoint_file.strip() or settings.alt_vocab_file.strip():
+            logger.warning(
+                "Alt F5 routing disabled because both F5_TTS_ALT_CHECKPOINT_FILE and F5_TTS_ALT_VOCAB_FILE are required"
+            )
         transcriber = ReferenceTranscriber(
             enabled=settings.transcriber_enabled,
             model_name=settings.transcriber_model,
@@ -187,6 +255,7 @@ async def lifespan(app: FastAPI):
         app.state.limits_store = limits_store
         app.state.ru_pipeline = ru_pipeline
         app.state.engine = engine
+        app.state.alt_engine = alt_engine
         app.state.transcriber = transcriber
         app.state.voice_files_dir = voices_dir
         app.state.provider_synthesize = _make_provider_synthesize_fn(app)
@@ -194,6 +263,8 @@ async def lifespan(app: FastAPI):
         if settings.enable_prewarm:
             try:
                 await engine.prewarm()
+                if alt_engine is not None:
+                    await alt_engine.prewarm()
             except Exception as error:
                 logger.warning("Prewarm failed: %s", error)
                 raise

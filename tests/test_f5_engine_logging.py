@@ -76,6 +76,31 @@ def _build_engine(tmp_path: Path, model: _FakeModel | None = None) -> F5Engine:
     return engine
 
 
+def _build_fake_engine(tmp_path: Path) -> F5Engine:
+    vocoder_dir = tmp_path / "vocoder"
+    vocoder_dir.mkdir(parents=True, exist_ok=True)
+    return F5Engine(
+        mode="fake",
+        upstream_dir=tmp_path,
+        russian_weights_dir=tmp_path,
+        model_name="F5TTS_v1_Base",
+        checkpoint_file="",
+        vocab_file="",
+        hf_cache_dir=tmp_path,
+        vocoder_local_dir=vocoder_dir,
+        vocoder_repo_id="charactr/vocos-mel-24khz",
+        device="cpu",
+        ode_method="euler",
+        use_ema=True,
+        target_rms=0.1,
+        cross_fade_duration=0.15,
+        nfe_step=32,
+        sway_sampling_coef=-1.0,
+        default_cfg_strength=2.0,
+        default_speed_preset="normal",
+    )
+
+
 def test_f5_engine_prefers_misha_checkpoint(workspace_tmp_path) -> None:
     misha_checkpoint = workspace_tmp_path / MISHA_RUSSIAN_CHECKPOINT_FILE
     fallback_checkpoint = workspace_tmp_path / "model_last_inference.safetensors"
@@ -86,6 +111,37 @@ def test_f5_engine_prefers_misha_checkpoint(workspace_tmp_path) -> None:
     engine = _build_engine(workspace_tmp_path)
 
     assert Path(engine._resolve_checkpoint_file()) == misha_checkpoint.resolve()
+
+
+def test_f5_engine_fake_mode_is_ready_without_real_model(workspace_tmp_path, caplog) -> None:
+    engine = _build_fake_engine(workspace_tmp_path)
+    caplog.set_level(logging.INFO)
+
+    assert engine.ready is True
+    asyncio.run(engine.prewarm())
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("F5 fake engine is ready" in message for message in messages)
+
+
+def test_f5_engine_fake_mode_can_synthesize_without_reference_audio(workspace_tmp_path) -> None:
+    engine = _build_fake_engine(workspace_tmp_path)
+
+    result = asyncio.run(
+        engine.synthesize(
+            text="hello мир",
+            voice="demo",
+            ref_audio_path=str(workspace_tmp_path / "missing.wav"),
+            ref_text="",
+            speed_preset="fast",
+        )
+    )
+
+    assert result.sample_rate == 24000
+    assert result.duration_sec > 0.5
+    assert result.audio_bytes.startswith(b"RIFF")
+    assert result.meta["engine_mode"] == "fake"
+    assert result.meta["fake_mode"] is True
 
 
 def test_f5_engine_logs_upstream_messages_and_progress(workspace_tmp_path, caplog) -> None:

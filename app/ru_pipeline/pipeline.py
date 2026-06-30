@@ -4,7 +4,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from .accentor import Accentor
 from .date_converter import convert_all_dates_in_text
@@ -71,6 +71,8 @@ class RuPipeline:
     @classmethod
     def detect_language(cls, text: str) -> str:
         cyrillic_count, latin_count = cls.language_counts(text)
+        if cyrillic_count > 0 and latin_count > 0:
+            return "mixed"
         if cyrillic_count > 0:
             return "russian"
         if latin_count > 0:
@@ -85,15 +87,23 @@ class RuPipeline:
             return ""
 
         pipeline_logger = logger or globals()["logger"]
+        pipeline_state = self.describe_state()
         cyrillic_count, latin_count = self.language_counts(text)
-        language = "russian" if cyrillic_count > 0 else ("english" if latin_count > 0 else "russian")
+        if cyrillic_count > 0 and latin_count > 0:
+            language = "mixed"
+        else:
+            language = "russian" if cyrillic_count > 0 else ("english" if latin_count > 0 else "russian")
         ru_pipeline_applied = cyrillic_count > 0 or language == "russian"
         pipeline_logger.info(
-            "RU preprocessing decision language=%s cyrillic_count=%s latin_count=%s ru_pipeline_applied=%s",
+            "RU preprocessing decision model=Misha24-10/F5-TTS_RUSSIAN language=%s cyrillic_count=%s latin_count=%s ru_pipeline_applied=%s yo_entries=%s ruaccent_enabled=%s ruaccent_loaded=%s accent_override_entries=%s",
             language,
             cyrillic_count,
             latin_count,
             ru_pipeline_applied,
+            pipeline_state.get("yo_entries"),
+            pipeline_state.get("ruaccent_enabled"),
+            pipeline_state.get("ruaccent_loaded"),
+            pipeline_state.get("accent_override_entries"),
         )
 
         if ru_pipeline_applied:
@@ -120,3 +130,10 @@ class RuPipeline:
         else:
             pipeline_logger.info("RU preprocessing stage=%s no_change=true", stage_name)
         return updated
+
+    def describe_state(self) -> dict[str, Any]:
+        accent_state = self.accentor.describe_state()
+        return {
+            **accent_state,
+            **self.yoficator.describe_state(),
+        }

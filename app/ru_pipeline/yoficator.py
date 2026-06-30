@@ -101,3 +101,8 @@ class Yoficator:
             return replacement[:1].upper() + replacement[1:]
         return replacement
 
+    def describe_state(self) -> dict[str, int]:
+        return {
+            "yo_entries": len(self.dictionary),
+        }
+

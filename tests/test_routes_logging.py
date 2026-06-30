@@ -14,6 +14,18 @@ from app.routers import provider, tts_compat
 
 
 class _DummyPipeline:
+    def detect_language(self, text: str) -> str:
+        return "russian"
+
+    def describe_state(self) -> dict[str, object]:
+        return {
+            "yo_entries": 128,
+            "ruaccent_enabled": True,
+            "ruaccent_loaded": True,
+            "ruaccent_model_size": "turbo",
+            "accent_override_entries": 24,
+        }
+
     def process(self, text: str, logger=None) -> str:
         return f"{text.strip()}."
 
@@ -129,6 +141,7 @@ def test_provider_route_keeps_response_shape_and_emits_request_logs(workspace_tm
     assert engine.calls[0]["metadata"]["request_id"] == "req-provider-1"
     messages = [record.getMessage() for record in caplog.records]
     assert any('request_id="req-provider-1"' in message and "Accepted synthesis request" in message for message in messages)
+    assert any('request_id="req-provider-1"' in message and "RU pipeline state" in message for message in messages)
     assert any('request_id="req-provider-1"' in message and "Synthesis completed" in message for message in messages)
 
 
@@ -163,6 +176,11 @@ def test_compat_route_keeps_response_shape_and_emits_request_logs(workspace_tmp_
     assert limits_store.logged[0]["user_id"] == 42
     messages = [record.getMessage() for record in caplog.records]
     assert any('request_id="req-compat-1"' in message and "Accepted synthesis request" in message for message in messages)
+    assert any(
+        'request_id="req-compat-1"' in message
+        and "RU pipeline state yo_entries=128 ruaccent_enabled=True ruaccent_loaded=True" in message
+        for message in messages
+    )
     assert any('request_id="req-compat-1"' in message and "Synthesis completed" in message for message in messages)
 
 

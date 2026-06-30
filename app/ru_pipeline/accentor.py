@@ -143,3 +143,11 @@ class Accentor:
     def _strip_accents(text: str) -> str:
         return text.replace(ACCENT_MARK, "")
 
+    def describe_state(self) -> dict[str, Any]:
+        return {
+            "ruaccent_enabled": bool(self.enabled),
+            "ruaccent_loaded": self.accentizer is not None,
+            "ruaccent_model_size": self.model_size,
+            "accent_override_entries": len(self.dictionary),
+        }
+

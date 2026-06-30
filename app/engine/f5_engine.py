@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import types
+import zlib
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 from time import perf_counter
@@ -56,6 +57,7 @@ LEGACY_MIN_TAIL_SILENCE_MS = 800
 LEGACY_FADE_OUT_SEC = 0.3
 LEGACY_POST_FADE_SILENCE_SEC = 0.1
 REFERENCE_AUDIO_SAMPLE_RATE = 24000
+FAKE_ENGINE_SAMPLE_RATE = 24000
 MISHA_RUSSIAN_REPO_ID = "Misha24-10/F5-TTS_RUSSIAN"
 MISHA_RUSSIAN_CHECKPOINT_FILE = "model_212000.safetensors"
 MISHA_RUSSIAN_CHECKPOINT_HF_PATH = f"F5TTS_v1_Base_v4_winter/{MISHA_RUSSIAN_CHECKPOINT_FILE}"
@@ -103,6 +105,8 @@ class F5Engine(BaseTtsEngine):
         model_name: str,
         checkpoint_file: str,
         vocab_file: str,
+        model_label: str = "Misha Russian F5",
+        model_repo_id: str = MISHA_RUSSIAN_REPO_ID,
         hf_cache_dir: Path,
         vocoder_local_dir: Path,
         vocoder_repo_id: str,
@@ -122,6 +126,8 @@ class F5Engine(BaseTtsEngine):
         self.model_name = model_name
         self.checkpoint_file = checkpoint_file.strip()
         self.vocab_file = vocab_file.strip()
+        self.model_label = model_label.strip() or model_name
+        self.model_repo_id = model_repo_id.strip() or "local"
         self.hf_cache_dir = hf_cache_dir
         self.vocoder_local_dir = vocoder_local_dir
         self.vocoder_repo_id = vocoder_repo_id.strip() or "charactr/vocos-mel-24khz"
@@ -135,7 +141,7 @@ class F5Engine(BaseTtsEngine):
         self.default_cfg_strength = float(default_cfg_strength)
         self.default_speed_preset = default_speed_preset.strip().lower() or "normal"
 
-        self._ready = False
+        self._ready = self.mode == "fake"
         self._api_cls: type | None = None
         self._model: Any = None
         self._infer_lock = asyncio.Lock()
@@ -145,8 +151,12 @@ class F5Engine(BaseTtsEngine):
         return self._ready
 
     async def prewarm(self) -> None:
+        if self.mode == "fake":
+            self._ready = True
+            logger.info("F5 fake engine is ready")
+            return
         if self.mode != "real":
-            raise RuntimeError("F5_TTS_ENGINE_MODE must be set to 'real'. Mock mode is disabled.")
+            raise RuntimeError(f"Unsupported F5_TTS_ENGINE_MODE: {self.mode}")
         if not self.upstream_dir.exists():
             raise RuntimeError(f"F5 upstream directory not found: {self.upstream_dir}")
 
@@ -173,8 +183,9 @@ class F5Engine(BaseTtsEngine):
         resolved_vocoder_dir = self._ensure_local_vocoder_assets()
 
         logger.info(
-            "Using Misha Russian F5 model repo=%s checkpoint=%s vocab=%s",
-            MISHA_RUSSIAN_REPO_ID,
+            "Using F5 model label=%s repo=%s checkpoint=%s vocab=%s",
+            self.model_label,
+            self.model_repo_id,
             ckpt_file,
             vocab_file,
         )
@@ -225,14 +236,10 @@ class F5Engine(BaseTtsEngine):
         remove_silence: bool = False,
         metadata: dict | None = None,
     ) -> SynthesisResult:
-        if not self._ready or self._model is None:
+        if not self._ready:
             raise RuntimeError("F5 engine is not ready")
         if not text or not text.strip():
             raise ValueError("Text is empty")
-
-        ref_audio = Path(ref_audio_path).resolve()
-        if not ref_audio.exists():
-            raise ValueError(f"Reference audio not found: {ref_audio}")
 
         preset = (speed_preset or self.default_speed_preset or "normal").strip().lower()
         detected_language = self._detect_language(text)
@@ -249,6 +256,26 @@ class F5Engine(BaseTtsEngine):
             logger,
             merge_request_context(metadata or {}, selected_voice=voice, voice=voice),
         )
+        ref_audio = Path(ref_audio_path).resolve() if ref_audio_path else None
+        if self.mode == "fake":
+            return self._synthesize_fake(
+                text=text,
+                voice=voice,
+                ref_audio=ref_audio,
+                cfg_value=cfg_value,
+                preset=preset,
+                speed_factor=speed_factor,
+                nfe_step=nfe_step,
+                detected_language=detected_language,
+                text_length=text_length,
+                volume_level=volume_level,
+                remove_silence=remove_silence,
+                request_logger=request_logger,
+            )
+        if self._model is None:
+            raise RuntimeError("F5 engine model is not loaded")
+        if ref_audio is None or not ref_audio.exists():
+            raise ValueError(f"Reference audio not found: {ref_audio}")
 
         started = perf_counter()
         request_logger.info(
@@ -302,7 +329,84 @@ class F5Engine(BaseTtsEngine):
                 "text_length_no_spaces": text_length,
                 "ref_audio_path": str(ref_audio),
                 "model_name": self.model_name,
-                "model_repo_id": MISHA_RUSSIAN_REPO_ID,
+                "model_label": self.model_label,
+                "model_repo_id": self.model_repo_id,
+            },
+        )
+
+    def _synthesize_fake(
+        self,
+        *,
+        text: str,
+        voice: str,
+        ref_audio: Path | None,
+        cfg_value: float,
+        preset: str,
+        speed_factor: float,
+        nfe_step: int,
+        detected_language: str,
+        text_length: int,
+        volume_level: float,
+        remove_silence: bool,
+        request_logger,
+    ) -> SynthesisResult:
+        import numpy as np
+
+        if ref_audio is not None and not ref_audio.exists():
+            request_logger.warning("Fake engine synth proceeding without reference audio path=%s", ref_audio)
+
+        started = perf_counter()
+        request_logger.info(
+            "Fake engine synthesis started model=%s cfg_strength=%s speed_factor=%s nfe_step=%s language=%s text_length_no_spaces=%s remove_silence=%s",
+            self.model_name,
+            cfg_value,
+            round(speed_factor, 4),
+            nfe_step,
+            detected_language,
+            text_length,
+            bool(remove_silence),
+        )
+        digest = zlib.crc32(f"{voice}|{text}".encode("utf-8"))
+        base_frequency = 220 + (digest % 280)
+        duration_sec = max(0.32, min(2.4, 0.42 + (text_length * 0.014) / max(speed_factor, 0.1)))
+        sample_rate = FAKE_ENGINE_SAMPLE_RATE
+        sample_count = max(1, int(sample_rate * duration_sec))
+        timeline = np.linspace(0.0, duration_sec, sample_count, endpoint=False, dtype=np.float32)
+        envelope = np.minimum(1.0, timeline * 10.0) * np.minimum(1.0, (duration_sec - timeline) * 7.5)
+        waveform = 0.18 * np.sin(2 * np.pi * base_frequency * timeline)
+        harmonic = 0.08 * np.sin(2 * np.pi * (base_frequency * 1.5) * timeline)
+        wav = (waveform + harmonic) * envelope
+        wav = self._apply_legacy_tail_shaping(wav, sample_rate)
+        wav = self._apply_volume(wav, float(volume_level))
+        audio_bytes = self._wav_to_bytes(wav, sample_rate)
+        duration_sec = len(wav) / float(sample_rate) if sample_rate > 0 else 0.0
+        elapsed = perf_counter() - started
+        request_logger.info(
+            "Fake engine synthesis finished duration_sec=%s sample_rate=%s inference_time_sec=%s base_frequency=%s",
+            round(max(0.0, duration_sec), 3),
+            int(sample_rate),
+            round(elapsed, 4),
+            base_frequency,
+        )
+        return SynthesisResult(
+            audio_bytes=audio_bytes,
+            duration_sec=max(0.0, duration_sec),
+            sample_rate=int(sample_rate),
+            voice=voice,
+            meta={
+                "engine_mode": self.mode,
+                "fake_mode": True,
+                "inference_time_sec": round(elapsed, 4),
+                "cfg_strength": cfg_value,
+                "speed_preset": preset,
+                "speed_factor": round(speed_factor, 4),
+                "nfe_step": int(nfe_step),
+                "detected_language": detected_language,
+                "text_length_no_spaces": text_length,
+                "ref_audio_path": str(ref_audio) if ref_audio is not None else "",
+                "model_name": self.model_name,
+                "model_label": f"{self.model_label} (fake)",
+                "model_repo_id": self.model_repo_id,
             },
         )
 
